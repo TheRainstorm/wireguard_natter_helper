@@ -176,7 +176,7 @@ func (a *Agent) runMonitor(ctx context.Context) {
 					log.Printf("monitor stale binding=%s interface=%s peer=%s age=%s failures=%d/%d", peer.BindingID, peer.Interface, shortKey(peer.PeerPublicKey), status.Age, failCounts[key], failThreshold)
 					if failCounts[key] >= failThreshold && !unreachable[key] {
 						unreachable[key] = true
-						_ = a.report(ctx, "peer.unreachable", "", map[string]any{
+						if err := a.report(ctx, "peer.unreachable", "", map[string]any{
 							"binding_id":       peer.BindingID,
 							"interface":        peer.Interface,
 							"peer_public_key":  peer.PeerPublicKey,
@@ -185,19 +185,23 @@ func (a *Agent) runMonitor(ctx context.Context) {
 							"last_handshake":   status.LastHandshake,
 							"age_seconds":      int(status.Age.Seconds()),
 							"stale_seconds":    int(stale.Seconds()),
-						})
+						}); err != nil {
+							log.Printf("monitor report peer.unreachable failed binding=%s error=%v", peer.BindingID, err)
+						}
 					}
 					continue
 				}
 				if unreachable[key] {
-					_ = a.report(ctx, "peer.recovered", "", map[string]any{
+					if err := a.report(ctx, "peer.recovered", "", map[string]any{
 						"binding_id":       peer.BindingID,
 						"interface":        peer.Interface,
 						"peer_public_key":  peer.PeerPublicKey,
 						"server_node_id":   peer.ServerNodeID,
 						"server_interface": peer.ServerInterface,
 						"last_handshake":   status.LastHandshake,
-					})
+					}); err != nil {
+						log.Printf("monitor report peer.recovered failed binding=%s error=%v", peer.BindingID, err)
+					}
 					log.Printf("monitor recovered binding=%s interface=%s peer=%s", peer.BindingID, peer.Interface, shortKey(peer.PeerPublicKey))
 				}
 				failCounts[key] = 0
