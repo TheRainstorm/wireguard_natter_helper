@@ -1,0 +1,8 @@
+.git
+3dparty
+old
+tmp
+*.json
+wgnh
+wgnh-*
+*.log

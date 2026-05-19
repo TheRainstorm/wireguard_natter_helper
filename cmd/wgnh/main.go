@@ -183,8 +183,8 @@ func agentCmd(args []string) {
 func webCmd(args []string) {
 	fs := flag.NewFlagSet("wgnh web", flag.ExitOnError)
 	addr := fs.String("addr", "127.0.0.1:9090", "local web listen address")
-	daemonAddr := fs.String("daemon-addr", "127.0.0.1:3333", "daemon TCP address")
-	adminToken := fs.String("admin-token", "", "admin token")
+	daemonAddr := fs.String("daemon-addr", "127.0.0.1:3333", "optional default daemon TCP address shown in the web form")
+	adminToken := fs.String("admin-token", "", "optional fallback admin token for web API requests")
 	_ = fs.Parse(args)
 	must(webui.New(*addr, *daemonAddr, *adminToken).ListenAndServe())
 }

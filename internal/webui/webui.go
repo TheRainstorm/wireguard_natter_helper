@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/yfy/wireguard-natter-helper/internal/rpc"
@@ -21,20 +22,25 @@ type Server struct {
 }
 
 type dashboardData struct {
-	DaemonAddr  string
-	GeneratedAt string
-	Nodes       []store.Node
-	Bindings    []store.Binding
-	Events      []store.Event
-	Stats       stats
+	DaemonAddr  string          `json:"daemon_addr"`
+	GeneratedAt string          `json:"generated_at"`
+	Nodes       []store.Node    `json:"nodes"`
+	Bindings    []store.Binding `json:"bindings"`
+	Events      []store.Event   `json:"events"`
+	Stats       stats           `json:"stats"`
 }
 
 type stats struct {
-	Nodes        int
-	Online       int
-	Bindings     int
-	WithEndpoint int
-	Errors       int
+	Nodes        int `json:"nodes"`
+	Online       int `json:"online"`
+	Bindings     int `json:"bindings"`
+	WithEndpoint int `json:"with_endpoint"`
+	Errors       int `json:"errors"`
+}
+
+type daemonCredentials struct {
+	DaemonAddr string `json:"daemon_addr"`
+	AdminToken string `json:"admin_token"`
 }
 
 func New(addr, daemonAddr, adminToken string) *Server {
@@ -46,7 +52,7 @@ func (s *Server) ListenAndServe() error {
 	mux.HandleFunc("/", s.index)
 	mux.HandleFunc("/api/summary", s.apiSummary)
 	mux.HandleFunc("/api/run-natter", s.apiRunNatter)
-	log.Printf("wgnh web ui listening on http://%s; daemon tcp=%s", s.addr, s.daemonAddr)
+	log.Printf("wgnh web ui listening on http://%s", s.addr)
 	return http.ListenAndServe(s.addr, mux)
 }
 
@@ -55,19 +61,30 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	data, err := s.load(r.Context())
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
-	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := pageTemplate.Execute(w, data); err != nil {
+	if err := pageTemplate.Execute(w, map[string]string{
+		"DefaultDaemonAddr": s.daemonAddr,
+	}); err != nil {
 		log.Printf("render web ui failed: %v", err)
 	}
 }
 
 func (s *Server) apiSummary(w http.ResponseWriter, r *http.Request) {
-	data, err := s.load(r.Context())
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"ok": false, "error": "method not allowed"})
+		return
+	}
+	var req daemonCredentials
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	req = s.withDefaults(req)
+	if err := validateCredentials(req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	data, err := load(r.Context(), req.DaemonAddr, req.AdminToken)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"ok": false, "error": err.Error()})
 		return
@@ -81,6 +98,7 @@ func (s *Server) apiRunNatter(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
+		daemonCredentials
 		ServerNodeID    string `json:"server_node_id"`
 		ServerInterface string `json:"server_interface"`
 	}
@@ -88,13 +106,18 @@ func (s *Server) apiRunNatter(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
+	creds := s.withDefaults(req.daemonCredentials)
+	if err := validateCredentials(creds); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
 	if req.ServerNodeID == "" || req.ServerInterface == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "server_node_id and server_interface are required"})
 		return
 	}
-	resp, err := rpc.Call(r.Context(), s.daemonAddr, rpc.Request{
+	resp, err := rpc.Call(r.Context(), creds.DaemonAddr, rpc.Request{
 		Kind:            "admin.run_natter",
-		AdminToken:      s.adminToken,
+		AdminToken:      creds.AdminToken,
 		ServerNodeID:    req.ServerNodeID,
 		ServerInterface: req.ServerInterface,
 	}, 10*time.Second)
@@ -105,16 +128,34 @@ func (s *Server) apiRunNatter(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (s *Server) load(ctx context.Context) (dashboardData, error) {
-	nodesResp, err := rpc.Call(ctx, s.daemonAddr, rpc.Request{Kind: "admin.nodes", AdminToken: s.adminToken}, 10*time.Second)
+func (s *Server) withDefaults(req daemonCredentials) daemonCredentials {
+	req.DaemonAddr = strings.TrimSpace(req.DaemonAddr)
+	if req.DaemonAddr == "" {
+		req.DaemonAddr = s.daemonAddr
+	}
+	if req.AdminToken == "" {
+		req.AdminToken = s.adminToken
+	}
+	return req
+}
+
+func validateCredentials(req daemonCredentials) error {
+	if strings.TrimSpace(req.DaemonAddr) == "" {
+		return fmt.Errorf("daemon address is required")
+	}
+	return nil
+}
+
+func load(ctx context.Context, daemonAddr, adminToken string) (dashboardData, error) {
+	nodesResp, err := rpc.Call(ctx, daemonAddr, rpc.Request{Kind: "admin.nodes", AdminToken: adminToken}, 10*time.Second)
 	if err != nil {
 		return dashboardData{}, fmt.Errorf("load nodes: %w", err)
 	}
-	bindingsResp, err := rpc.Call(ctx, s.daemonAddr, rpc.Request{Kind: "admin.bindings", AdminToken: s.adminToken}, 10*time.Second)
+	bindingsResp, err := rpc.Call(ctx, daemonAddr, rpc.Request{Kind: "admin.bindings", AdminToken: adminToken}, 10*time.Second)
 	if err != nil {
 		return dashboardData{}, fmt.Errorf("load bindings: %w", err)
 	}
-	eventsResp, err := rpc.Call(ctx, s.daemonAddr, rpc.Request{Kind: "admin.events", AdminToken: s.adminToken, Limit: 80}, 10*time.Second)
+	eventsResp, err := rpc.Call(ctx, daemonAddr, rpc.Request{Kind: "admin.events", AdminToken: adminToken, Limit: 80}, 10*time.Second)
 	if err != nil {
 		return dashboardData{}, fmt.Errorf("load events: %w", err)
 	}
@@ -143,7 +184,7 @@ func (s *Server) load(ctx context.Context) (dashboardData, error) {
 	}
 
 	return dashboardData{
-		DaemonAddr:  s.daemonAddr,
+		DaemonAddr:  daemonAddr,
 		GeneratedAt: time.Now().Format("2006-01-02 15:04:05"),
 		Nodes:       nodes,
 		Bindings:    bindings,
@@ -163,17 +204,7 @@ func writeJSON(w http.ResponseWriter, status int, data any) {
 	_, _ = w.Write(raw)
 }
 
-var pageTemplate = template.Must(template.New("index").Funcs(template.FuncMap{
-	"json": compactJSON,
-}).Parse(pageHTML))
-
-func compactJSON(v any) string {
-	raw, err := json.Marshal(v)
-	if err != nil {
-		return ""
-	}
-	return string(raw)
-}
+var pageTemplate = template.Must(template.New("index").Parse(pageHTML))
 
 const pageHTML = `<!doctype html>
 <html lang="zh-CN">
@@ -222,6 +253,29 @@ const pageHTML = `<!doctype html>
     h1 { margin: 0; font-size: 20px; letter-spacing: 0; }
     .sub { color: var(--muted); margin-top: 2px; }
     main { max-width: 1280px; margin: 0 auto; padding: 24px; }
+    .connect {
+      display: grid;
+      grid-template-columns: minmax(220px, 1.2fr) minmax(220px, 1fr) auto auto auto;
+      gap: 10px;
+      align-items: end;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      margin-bottom: 18px;
+      box-shadow: var(--shadow);
+    }
+    label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; font-weight: 650; }
+    input {
+      width: 100%;
+      min-height: 38px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      padding: 8px 10px;
+      color: var(--text);
+      background: #fff;
+      font: inherit;
+    }
     .stats {
       display: grid;
       grid-template-columns: repeat(5, minmax(140px, 1fr));
@@ -293,13 +347,19 @@ const pageHTML = `<!doctype html>
       border-radius: 7px;
       background: var(--accent);
       color: white;
+      min-height: 38px;
       padding: 8px 11px;
       font-weight: 650;
       cursor: pointer;
     }
     button.secondary { background: var(--accent-2); }
+    button.ghost {
+      color: var(--accent-2);
+      background: #e6f4f1;
+      border: 1px solid #b7dfd8;
+    }
     button:disabled { opacity: .55; cursor: wait; }
-    .toolbar { display: flex; gap: 8px; align-items: center; }
+    .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
     .muted { color: var(--muted); }
     .wrap { white-space: normal; min-width: 220px; }
     .scroll { overflow-x: auto; }
@@ -317,10 +377,12 @@ const pageHTML = `<!doctype html>
       display: none;
       z-index: 20;
     }
-    @media (max-width: 900px) {
+    @media (max-width: 980px) {
       .top { align-items: flex-start; flex-direction: column; }
+      .connect { grid-template-columns: 1fr; }
       .stats { grid-template-columns: repeat(2, minmax(130px, 1fr)); }
       main { padding: 16px; }
+      button { width: 100%; }
     }
   </style>
 </head>
@@ -329,20 +391,32 @@ const pageHTML = `<!doctype html>
     <div class="top">
       <div>
         <h1>WireGuard Natter Helper</h1>
-        <div class="sub">daemon <code>{{.DaemonAddr}}</code> · {{.GeneratedAt}} · 自动刷新 15s</div>
+        <div id="subtitle" class="sub">输入 daemon 地址和 admin token 后连接，浏览器会保存配置。</div>
       </div>
       <div class="toolbar">
-        <button class="secondary" onclick="location.reload()">刷新</button>
+        <button class="secondary" id="refreshBtn">刷新</button>
       </div>
     </div>
   </header>
   <main>
+    <div class="connect">
+      <label>Daemon TCP 地址
+        <input id="daemonAddr" autocomplete="off" placeholder="your-vps.example.com:3333" value="{{.DefaultDaemonAddr}}">
+      </label>
+      <label>Admin Token
+        <input id="adminToken" type="password" autocomplete="current-password" placeholder="输入 daemon admin token">
+      </label>
+      <button id="connectBtn">连接并保存</button>
+      <button class="ghost" id="forgetBtn">忘记</button>
+      <button class="secondary" id="showTokenBtn">显示 Token</button>
+    </div>
+
     <div class="stats">
-      <div class="stat"><div class="label">节点</div><div class="value">{{.Stats.Nodes}}</div></div>
-      <div class="stat"><div class="label">在线节点</div><div class="value">{{.Stats.Online}}</div></div>
-      <div class="stat"><div class="label">绑定</div><div class="value">{{.Stats.Bindings}}</div></div>
-      <div class="stat"><div class="label">已有 Endpoint</div><div class="value">{{.Stats.WithEndpoint}}</div></div>
-      <div class="stat"><div class="label">错误事件</div><div class="value">{{.Stats.Errors}}</div></div>
+      <div class="stat"><div class="label">节点</div><div id="statNodes" class="value">-</div></div>
+      <div class="stat"><div class="label">在线节点</div><div id="statOnline" class="value">-</div></div>
+      <div class="stat"><div class="label">绑定</div><div id="statBindings" class="value">-</div></div>
+      <div class="stat"><div class="label">已有 Endpoint</div><div id="statEndpoints" class="value">-</div></div>
+      <div class="stat"><div class="label">错误事件</div><div id="statErrors" class="value">-</div></div>
     </div>
 
     <section>
@@ -350,20 +424,7 @@ const pageHTML = `<!doctype html>
       <div class="scroll">
         <table>
           <thead><tr><th>节点</th><th>角色</th><th>状态</th><th>平台</th><th>版本</th><th>最后心跳</th></tr></thead>
-          <tbody>
-            {{range .Nodes}}
-            <tr>
-              <td><code>{{.ID}}</code></td>
-              <td>{{.Role}}</td>
-              <td><span class="badge {{.Status}}">{{.Status}}</span></td>
-              <td>{{.Platform}}</td>
-              <td>{{.AgentVersion}}</td>
-              <td>{{.LastSeenAt}}</td>
-            </tr>
-            {{else}}
-            <tr><td colspan="6" class="empty">暂无节点</td></tr>
-            {{end}}
-          </tbody>
+          <tbody id="nodesBody"><tr><td colspan="6" class="empty">尚未连接 daemon</td></tr></tbody>
         </table>
       </div>
     </section>
@@ -373,20 +434,7 @@ const pageHTML = `<!doctype html>
       <div class="scroll">
         <table>
           <thead><tr><th>绑定</th><th>Server</th><th>Client</th><th>Endpoint</th><th>配置</th><th>操作</th></tr></thead>
-          <tbody>
-            {{range .Bindings}}
-            <tr>
-              <td><code>{{.ID}}</code></td>
-              <td><code>{{.ServerNodeID}}</code> / <code>{{.ServerInterface}}</code></td>
-              <td><code>{{.ClientNodeID}}</code> / <code>{{.ClientInterface}}</code></td>
-              <td>{{if .EndpointHost}}<code>{{.EndpointHost}}:{{.EndpointPort}}</code>{{else}}<span class="muted">未发布</span>{{end}}</td>
-              <td><span class="badge">{{.ConfigType}}</span> <span class="muted">{{.ReloadMethod}}</span></td>
-              <td><button onclick="runNatter('{{.ServerNodeID}}','{{.ServerInterface}}', this)">触发 natter</button></td>
-            </tr>
-            {{else}}
-            <tr><td colspan="6" class="empty">暂无绑定</td></tr>
-            {{end}}
-          </tbody>
+          <tbody id="bindingsBody"><tr><td colspan="6" class="empty">尚未连接 daemon</td></tr></tbody>
         </table>
       </div>
     </section>
@@ -396,28 +444,208 @@ const pageHTML = `<!doctype html>
       <div class="scroll">
         <table>
           <thead><tr><th>时间</th><th>级别</th><th>类型</th><th>节点</th><th>绑定</th><th>消息</th><th>Payload</th></tr></thead>
-          <tbody>
-            {{range .Events}}
-            <tr>
-              <td>{{.CreatedAt}}</td>
-              <td><span class="{{.Severity}}">{{.Severity}}</span></td>
-              <td><code>{{.Type}}</code></td>
-              <td>{{.NodeID}}</td>
-              <td>{{.BindingID}}</td>
-              <td class="wrap">{{.Message}}</td>
-              <td class="wrap"><code>{{json .Payload}}</code></td>
-            </tr>
-            {{else}}
-            <tr><td colspan="7" class="empty">暂无事件</td></tr>
-            {{end}}
-          </tbody>
+          <tbody id="eventsBody"><tr><td colspan="7" class="empty">尚未连接 daemon</td></tr></tbody>
         </table>
       </div>
     </section>
   </main>
   <div id="toast" class="toast"></div>
   <script>
-    setTimeout(() => location.reload(), 15000);
+    const storage = {
+      daemonAddr: 'wgnh.web.daemonAddr',
+      adminToken: 'wgnh.web.adminToken'
+    };
+    const defaultDaemonAddr = '{{.DefaultDaemonAddr}}';
+    const daemonAddrInput = document.getElementById('daemonAddr');
+    const adminTokenInput = document.getElementById('adminToken');
+    const connectBtn = document.getElementById('connectBtn');
+    const refreshBtn = document.getElementById('refreshBtn');
+    const forgetBtn = document.getElementById('forgetBtn');
+    const showTokenBtn = document.getElementById('showTokenBtn');
+    let refreshTimer = null;
+
+    daemonAddrInput.value = localStorage.getItem(storage.daemonAddr) || daemonAddrInput.value || defaultDaemonAddr;
+    adminTokenInput.value = localStorage.getItem(storage.adminToken) || '';
+
+    connectBtn.addEventListener('click', () => refresh(true));
+    refreshBtn.addEventListener('click', () => refresh(false));
+    forgetBtn.addEventListener('click', forgetConnection);
+    showTokenBtn.addEventListener('click', toggleToken);
+
+    if (daemonAddrInput.value && adminTokenInput.value) {
+      refresh(false);
+    }
+
+    function credentials() {
+      return {
+        daemon_addr: daemonAddrInput.value.trim(),
+        admin_token: adminTokenInput.value
+      };
+    }
+
+    function saveConnection() {
+      const creds = credentials();
+      localStorage.setItem(storage.daemonAddr, creds.daemon_addr);
+      localStorage.setItem(storage.adminToken, creds.admin_token);
+    }
+
+    function forgetConnection() {
+      localStorage.removeItem(storage.daemonAddr);
+      localStorage.removeItem(storage.adminToken);
+      adminTokenInput.value = '';
+      daemonAddrInput.value = defaultDaemonAddr || '';
+      clearRefreshTimer();
+      document.getElementById('subtitle').textContent = '已清除浏览器保存的连接信息。';
+      toast('已忘记连接信息');
+    }
+
+    function toggleToken() {
+      const showing = adminTokenInput.type === 'text';
+      adminTokenInput.type = showing ? 'password' : 'text';
+      showTokenBtn.textContent = showing ? '显示 Token' : '隐藏 Token';
+    }
+
+    async function refresh(shouldSave) {
+      const creds = credentials();
+      if (!creds.daemon_addr) {
+        toast('请先输入 daemon TCP 地址');
+        return;
+      }
+      if (shouldSave) {
+        saveConnection();
+      }
+      setBusy(true);
+      try {
+        const data = await postJSON('/api/summary', creds);
+        render(data.data);
+        if (shouldSave) {
+          toast('连接成功，已保存到浏览器');
+        }
+        scheduleRefresh();
+      } catch (err) {
+        clearRefreshTimer();
+        toast('连接失败: ' + err.message);
+        document.getElementById('subtitle').textContent = '连接失败: ' + err.message;
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function runNatter(serverNodeID, serverInterface, btn) {
+      btn.disabled = true;
+      try {
+        const data = await postJSON('/api/run-natter', {
+          ...credentials(),
+          server_node_id: serverNodeID,
+          server_interface: serverInterface
+        });
+        toast('已下发 natter.run: ' + (data.command && data.command.command_id ? data.command.command_id : 'queued'));
+        await refresh(false);
+      } catch (err) {
+        toast('失败: ' + err.message);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function postJSON(url, body) {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body)
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || 'request failed');
+      return data;
+    }
+
+    function render(data) {
+      document.getElementById('subtitle').innerHTML = 'daemon <code>' + escapeHTML(data.daemon_addr) + '</code> · ' + escapeHTML(data.generated_at) + ' · 自动刷新 15s';
+      document.getElementById('statNodes').textContent = data.stats.nodes;
+      document.getElementById('statOnline').textContent = data.stats.online;
+      document.getElementById('statBindings').textContent = data.stats.bindings;
+      document.getElementById('statEndpoints').textContent = data.stats.with_endpoint;
+      document.getElementById('statErrors').textContent = data.stats.errors;
+      renderNodes(data.nodes || []);
+      renderBindings(data.bindings || []);
+      renderEvents(data.events || []);
+    }
+
+    function renderNodes(nodes) {
+      const body = document.getElementById('nodesBody');
+      if (!nodes.length) {
+        body.innerHTML = '<tr><td colspan="6" class="empty">暂无节点</td></tr>';
+        return;
+      }
+      body.innerHTML = nodes.map(node => '<tr>'
+        + '<td><code>' + escapeHTML(node.id) + '</code></td>'
+        + '<td>' + escapeHTML(node.role) + '</td>'
+        + '<td><span class="badge ' + escapeAttr(node.status) + '">' + escapeHTML(node.status) + '</span></td>'
+        + '<td>' + escapeHTML(node.platform) + '</td>'
+        + '<td>' + escapeHTML(node.agent_version) + '</td>'
+        + '<td>' + escapeHTML(node.last_seen_at) + '</td>'
+        + '</tr>').join('');
+    }
+
+    function renderBindings(bindings) {
+      const body = document.getElementById('bindingsBody');
+      if (!bindings.length) {
+        body.innerHTML = '<tr><td colspan="6" class="empty">暂无绑定</td></tr>';
+        return;
+      }
+      body.innerHTML = bindings.map((binding, idx) => {
+        const endpoint = binding.endpoint_host
+          ? '<code>' + escapeHTML(binding.endpoint_host + ':' + binding.endpoint_port) + '</code>'
+          : '<span class="muted">未发布</span>';
+        return '<tr>'
+          + '<td><code>' + escapeHTML(binding.id) + '</code></td>'
+          + '<td><code>' + escapeHTML(binding.server_node_id) + '</code> / <code>' + escapeHTML(binding.server_interface) + '</code></td>'
+          + '<td><code>' + escapeHTML(binding.client_node_id) + '</code> / <code>' + escapeHTML(binding.client_interface) + '</code></td>'
+          + '<td>' + endpoint + '</td>'
+          + '<td><span class="badge">' + escapeHTML(binding.config_type) + '</span> <span class="muted">' + escapeHTML(binding.reload_method) + '</span></td>'
+          + '<td><button data-binding="' + idx + '">触发 natter</button></td>'
+          + '</tr>';
+      }).join('');
+      body.querySelectorAll('button[data-binding]').forEach(btn => {
+        const binding = bindings[Number(btn.dataset.binding)];
+        btn.addEventListener('click', () => runNatter(binding.server_node_id, binding.server_interface, btn));
+      });
+    }
+
+    function renderEvents(events) {
+      const body = document.getElementById('eventsBody');
+      if (!events.length) {
+        body.innerHTML = '<tr><td colspan="7" class="empty">暂无事件</td></tr>';
+        return;
+      }
+      body.innerHTML = events.map(event => '<tr>'
+        + '<td>' + escapeHTML(event.created_at) + '</td>'
+        + '<td><span class="' + escapeAttr(event.severity) + '">' + escapeHTML(event.severity) + '</span></td>'
+        + '<td><code>' + escapeHTML(event.type) + '</code></td>'
+        + '<td>' + escapeHTML(event.node_id) + '</td>'
+        + '<td>' + escapeHTML(event.binding_id) + '</td>'
+        + '<td class="wrap">' + escapeHTML(event.message) + '</td>'
+        + '<td class="wrap"><code>' + escapeHTML(JSON.stringify(event.payload || {})) + '</code></td>'
+        + '</tr>').join('');
+    }
+
+    function scheduleRefresh() {
+      clearRefreshTimer();
+      refreshTimer = setTimeout(() => refresh(false), 15000);
+    }
+
+    function clearRefreshTimer() {
+      if (refreshTimer) {
+        clearTimeout(refreshTimer);
+        refreshTimer = null;
+      }
+    }
+
+    function setBusy(busy) {
+      connectBtn.disabled = busy;
+      refreshBtn.disabled = busy;
+    }
+
     function toast(text) {
       const el = document.getElementById('toast');
       el.textContent = text;
@@ -425,22 +653,19 @@ const pageHTML = `<!doctype html>
       clearTimeout(window.__toastTimer);
       window.__toastTimer = setTimeout(() => el.style.display = 'none', 5000);
     }
-    async function runNatter(serverNodeID, serverInterface, btn) {
-      btn.disabled = true;
-      try {
-        const res = await fetch('/api/run-natter', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({server_node_id: serverNodeID, server_interface: serverInterface})
-        });
-        const data = await res.json();
-        if (!res.ok || !data.ok) throw new Error(data.error || 'request failed');
-        toast('已下发 natter.run: ' + data.command.command_id);
-      } catch (err) {
-        toast('失败: ' + err.message);
-      } finally {
-        btn.disabled = false;
-      }
+
+    function escapeHTML(value) {
+      return String(value || '').replace(/[&<>"']/g, ch => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+      }[ch]));
+    }
+
+    function escapeAttr(value) {
+      return escapeHTML(value).replace(/[^a-zA-Z0-9_-]/g, '');
     }
   </script>
 </body>
