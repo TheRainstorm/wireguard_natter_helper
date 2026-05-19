@@ -17,3 +17,5 @@ natter 自动 获得 nat 后的 ipv4 地址，并更新 wg endpoint
 - 有一个 web 提供可视化
     - 每个客户端配置，和当前连接状态
 - vps 服务需要一定加密
+- 既然 natter 没法在占用端口时获得映射IP和端口，那么需要增加 wgnh 需要调用 natter 时停止对应wg，然后获
+  得后再次启动 wg

@@ -12,6 +12,7 @@
     }
   ],
   "natter": {
+    "stop_wireguard": false,
     "command": [
       "python3",
       "examples/fake-natter.py"

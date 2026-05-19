@@ -1,0 +1,29 @@
+{
+  "node_id": "home-a",
+  "daemon_url": "https://your-vps.example.com",
+  "token": "replace-with-home-a-token",
+  "role": "server",
+  "retry_seconds": 5,
+  "wireguard": [
+    {
+      "name": "wg0",
+      "listen_port": 51820,
+      "config_type": "openwrt_uci"
+    }
+  ],
+  "natter": {
+    "stop_wireguard": true,
+    "wireguard_control_method": "ifup",
+    "command": [
+      "python3",
+      "/opt/Natter/natter.py",
+      "-u",
+      "-i",
+      "pppoe-wan",
+      "-b",
+      "51820",
+      "--map-only"
+    ],
+    "timeout_seconds": 90
+  }
+}

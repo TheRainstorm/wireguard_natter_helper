@@ -163,6 +163,32 @@ func ReloadInterface(interfaceName, method string) error {
 	}
 }
 
+func StopInterface(interfaceName, method string) error {
+	switch method {
+	case "ifup", "openwrt":
+		return run("ifdown", interfaceName)
+	case "wg-quick":
+		return run("wg-quick", "down", interfaceName)
+	case "systemd":
+		return run("systemctl", "stop", "wg-quick@"+interfaceName)
+	default:
+		return fmt.Errorf("unsupported wireguard_control_method: %s", method)
+	}
+}
+
+func StartInterface(interfaceName, method string) error {
+	switch method {
+	case "ifup", "openwrt":
+		return run("ifup", interfaceName)
+	case "wg-quick":
+		return run("wg-quick", "up", interfaceName)
+	case "systemd":
+		return run("systemctl", "start", "wg-quick@"+interfaceName)
+	default:
+		return fmt.Errorf("unsupported wireguard_control_method: %s", method)
+	}
+}
+
 func findOpenWrtPeerSection(interfaceName, peerPublicKey string) (string, error) {
 	cmd := exec.Command("uci", "show", "network")
 	out, err := cmd.Output()

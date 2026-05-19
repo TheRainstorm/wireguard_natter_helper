@@ -5,6 +5,7 @@ __pycache__/
 *.db-shm
 *.db-wal
 wgnh
+wgnh-*
 wgnh-state.json
 *.tmp
 .pytest_cache/

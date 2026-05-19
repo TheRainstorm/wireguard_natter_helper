@@ -29,14 +29,18 @@ type Config struct {
 }
 
 type WGInterface struct {
-	Name       string `json:"name"`
-	ListenPort int    `json:"listen_port"`
-	ConfigType string `json:"config_type"`
+	Name            string `json:"name"`
+	ListenPort      int    `json:"listen_port"`
+	ConfigType      string `json:"config_type"`
+	WGControlMethod string `json:"wireguard_control_method"`
 }
 
 type NatterConfig struct {
-	Command        []string `json:"command"`
-	TimeoutSeconds int      `json:"timeout_seconds"`
+	Command                []string `json:"command"`
+	TimeoutSeconds         int      `json:"timeout_seconds"`
+	StopWireGuard          bool     `json:"stop_wireguard"`
+	WireGuardControlMethod string   `json:"wireguard_control_method"`
+	RestartDelaySeconds    int      `json:"restart_delay_seconds"`
 }
 
 type Agent struct {
@@ -134,6 +138,25 @@ func (a *Agent) runNatter(ctx context.Context, payload map[string]any) (map[stri
 	if len(a.config.Natter.Command) == 0 {
 		return nil, errors.New("natter.command is not configured")
 	}
+	serverInterface := stringField(payload, "server_interface")
+	if serverInterface == "" {
+		return nil, errors.New("server_interface is required")
+	}
+
+	stoppedWireGuard := false
+	controlMethod := ""
+	if a.config.Natter.StopWireGuard {
+		method, err := a.wireGuardControlMethod(serverInterface)
+		if err != nil {
+			return nil, err
+		}
+		if err := wgconfig.StopInterface(serverInterface, method); err != nil {
+			return nil, fmt.Errorf("stop WireGuard interface %s failed: %w", serverInterface, err)
+		}
+		stoppedWireGuard = true
+		controlMethod = method
+	}
+
 	timeout := time.Duration(a.config.Natter.TimeoutSeconds) * time.Second
 	if timeout == 0 {
 		timeout = 90 * time.Second
@@ -143,14 +166,58 @@ func (a *Agent) runNatter(ctx context.Context, payload map[string]any) (map[stri
 	cmd := exec.CommandContext(runCtx, a.config.Natter.Command[0], a.config.Natter.Command[1:]...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		if startErr := a.restartWireGuardIfNeeded(serverInterface, controlMethod, stoppedWireGuard); startErr != nil {
+			return nil, fmt.Errorf("natter command failed: %w: %s; additionally %v", err, string(out), startErr)
+		}
 		return nil, fmt.Errorf("natter command failed: %w: %s", err, string(out))
 	}
 	result, err := ParseNatterOutput(out)
 	if err != nil {
+		if startErr := a.restartWireGuardIfNeeded(serverInterface, controlMethod, stoppedWireGuard); startErr != nil {
+			return nil, fmt.Errorf("%w; additionally %v", err, startErr)
+		}
 		return nil, err
 	}
-	result["server_interface"] = stringField(payload, "server_interface")
+	if startErr := a.restartWireGuardIfNeeded(serverInterface, controlMethod, stoppedWireGuard); startErr != nil {
+		return nil, startErr
+	}
+	result["server_interface"] = serverInterface
 	return result, nil
+}
+
+func (a *Agent) restartWireGuardIfNeeded(interfaceName, method string, stopped bool) error {
+	if !stopped {
+		return nil
+	}
+	if delay := a.config.Natter.RestartDelaySeconds; delay > 0 {
+		time.Sleep(time.Duration(delay) * time.Second)
+	}
+	if err := wgconfig.StartInterface(interfaceName, method); err != nil {
+		return fmt.Errorf("start WireGuard interface %s failed: %w", interfaceName, err)
+	}
+	return nil
+}
+
+func (a *Agent) wireGuardControlMethod(interfaceName string) (string, error) {
+	if a.config.Natter.WireGuardControlMethod != "" {
+		return a.config.Natter.WireGuardControlMethod, nil
+	}
+	for _, item := range a.config.WireGuard {
+		if item.Name == interfaceName {
+			if item.WGControlMethod != "" {
+				return item.WGControlMethod, nil
+			}
+			switch item.ConfigType {
+			case "openwrt_uci":
+				return "ifup", nil
+			case "wg_conf", "runtime":
+				return "wg-quick", nil
+			default:
+				return "", fmt.Errorf("wireguard_control_method is required for interface %s", interfaceName)
+			}
+		}
+	}
+	return "", fmt.Errorf("wireguard interface %s is not configured", interfaceName)
 }
 
 func ParseNatterOutput(out []byte) (map[string]any, error) {
