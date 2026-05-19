@@ -1,6 +1,6 @@
 {
   "node_id": "home-a",
-  "daemon_url": "http://127.0.0.1:8080",
+  "daemon_addr": "127.0.0.1:3333",
   "token": "replace-with-node-token",
   "role": "server",
   "retry_seconds": 5,

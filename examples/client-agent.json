@@ -1,6 +1,6 @@
 {
   "node_id": "office-b",
-  "daemon_url": "http://127.0.0.1:8080",
+  "daemon_addr": "127.0.0.1:3333",
   "token": "replace-with-node-token",
   "role": "client",
   "retry_seconds": 5,

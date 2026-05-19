@@ -1,0 +1,83 @@
+package rpc
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
+	"strings"
+	"time"
+
+	"github.com/yfy/wireguard-natter-helper/internal/protocol"
+	"github.com/yfy/wireguard-natter-helper/internal/store"
+)
+
+type Request struct {
+	Kind       string         `json:"kind"`
+	NodeID     string         `json:"node_id,omitempty"`
+	Token      string         `json:"token,omitempty"`
+	AdminToken string         `json:"admin_token,omitempty"`
+	Meta       map[string]any `json:"meta,omitempty"`
+
+	ReportType string         `json:"report_type,omitempty"`
+	CommandID  string         `json:"command_id,omitempty"`
+	Payload    map[string]any `json:"payload,omitempty"`
+
+	ServerNodeID    string `json:"server_node_id,omitempty"`
+	ServerInterface string `json:"server_interface,omitempty"`
+	Limit           int    `json:"limit,omitempty"`
+}
+
+type Response struct {
+	OK       bool              `json:"ok"`
+	Error    string            `json:"error,omitempty"`
+	Command  *protocol.Command `json:"command,omitempty"`
+	Queued   int               `json:"queued,omitempty"`
+	Nodes    []store.Node      `json:"nodes,omitempty"`
+	Bindings []store.Binding   `json:"bindings,omitempty"`
+	Events   []store.Event     `json:"events,omitempty"`
+}
+
+func NormalizeAddr(addr string) (string, error) {
+	addr = strings.TrimSpace(addr)
+	addr = strings.TrimPrefix(addr, "tcp://")
+	if strings.HasPrefix(addr, "http://") || strings.HasPrefix(addr, "https://") {
+		return "", fmt.Errorf("HTTP URLs are not supported; use host:port or tcp://host:port")
+	}
+	if addr == "" {
+		return "", fmt.Errorf("empty daemon address")
+	}
+	return addr, nil
+}
+
+func Call(ctx context.Context, addr string, req Request, timeout time.Duration) (Response, error) {
+	addr, err := NormalizeAddr(addr)
+	if err != nil {
+		return Response{}, err
+	}
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	dialer := net.Dialer{}
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return Response{}, err
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(timeout))
+	if err := json.NewEncoder(conn).Encode(req); err != nil {
+		return Response{}, err
+	}
+	var resp Response
+	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
+		return Response{}, err
+	}
+	if !resp.OK {
+		if resp.Error == "" {
+			resp.Error = "daemon returned error"
+		}
+		return resp, errors.New(resp.Error)
+	}
+	return resp, nil
+}

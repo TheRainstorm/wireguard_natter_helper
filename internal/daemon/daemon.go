@@ -4,13 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
-	"strconv"
-	"strings"
+	"log"
+	"net"
 	"time"
 
 	"github.com/yfy/wireguard-natter-helper/internal/auth"
 	"github.com/yfy/wireguard-natter-helper/internal/protocol"
+	"github.com/yfy/wireguard-natter-helper/internal/rpc"
 	"github.com/yfy/wireguard-natter-helper/internal/store"
 )
 
@@ -25,93 +25,121 @@ func New(st *store.Store, adminToken string) *Server {
 }
 
 func (s *Server) ListenAndServe(addr string) error {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", s.health)
-	mux.HandleFunc("/agent/poll", s.agentPoll)
-	mux.HandleFunc("/agent/report", s.agentReport)
-	mux.HandleFunc("/api/nodes", s.apiNodes)
-	mux.HandleFunc("/api/bindings", s.apiBindings)
-	mux.HandleFunc("/api/events", s.apiEvents)
-	mux.HandleFunc("/api/actions/run-natter", s.apiRunNatter)
-	return http.ListenAndServe(addr, mux)
+	addr, err := rpc.NormalizeAddr(addr)
+	if err != nil {
+		return err
+	}
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	defer listener.Close()
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			return err
+		}
+		go s.handleConn(conn)
+	}
 }
 
-func (s *Server) health(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+func (s *Server) handleConn(conn net.Conn) {
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(s.pollWait + 10*time.Second))
+	var req rpc.Request
+	if err := json.NewDecoder(conn).Decode(&req); err != nil {
+		s.write(conn, rpc.Response{OK: false, Error: "invalid request json: " + err.Error()})
+		return
+	}
+	resp := s.handle(req, conn.RemoteAddr().String())
+	s.write(conn, resp)
 }
 
-func (s *Server) agentPoll(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-		return
+func (s *Server) write(conn net.Conn, resp rpc.Response) {
+	if err := json.NewEncoder(conn).Encode(resp); err != nil {
+		log.Printf("tcp write response failed remote=%s error=%v", conn.RemoteAddr(), err)
 	}
-	nodeID, ok := s.authenticateAgent(w, r)
-	if !ok {
-		return
+}
+
+func (s *Server) handle(req rpc.Request, remote string) rpc.Response {
+	switch req.Kind {
+	case "agent.poll":
+		return s.agentPoll(req, remote)
+	case "agent.report":
+		return s.agentReport(req, remote)
+	case "admin.nodes":
+		if err := s.authenticateAdmin(req); err != nil {
+			return rpc.Response{OK: false, Error: err.Error()}
+		}
+		return rpc.Response{OK: true, Nodes: s.store.Nodes()}
+	case "admin.bindings":
+		if err := s.authenticateAdmin(req); err != nil {
+			return rpc.Response{OK: false, Error: err.Error()}
+		}
+		return rpc.Response{OK: true, Bindings: s.store.Bindings()}
+	case "admin.events":
+		if err := s.authenticateAdmin(req); err != nil {
+			return rpc.Response{OK: false, Error: err.Error()}
+		}
+		limit := req.Limit
+		if limit <= 0 {
+			limit = 100
+		}
+		return rpc.Response{OK: true, Events: s.store.Events(limit)}
+	case "admin.run_natter":
+		return s.adminRunNatter(req)
+	default:
+		return rpc.Response{OK: false, Error: "unknown request kind: " + req.Kind}
 	}
-	var body struct {
-		Meta map[string]any `json:"meta"`
+}
+
+func (s *Server) agentPoll(req rpc.Request, remote string) rpc.Response {
+	nodeID, err := s.authenticateAgent(req, remote)
+	if err != nil {
+		return rpc.Response{OK: false, Error: err.Error()}
 	}
-	if err := readJSON(r, &body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
-		return
-	}
-	_ = s.store.MarkSeen(nodeID, body.Meta)
+	_ = s.store.MarkSeen(nodeID, req.Meta)
 
 	var cmd *protocol.Command
 	deadline := time.Now().Add(s.pollWait)
 	for time.Now().Before(deadline) {
 		next, err := s.store.NextCommand(nodeID)
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-			return
+			return rpc.Response{OK: false, Error: err.Error()}
 		}
 		if next != nil {
 			cmd = next
+			log.Printf("delivering command node=%s id=%s action=%s", nodeID, cmd.CommandID, cmd.Action)
 			break
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "command": cmd})
+	return rpc.Response{OK: true, Command: cmd}
 }
 
-func (s *Server) agentReport(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-		return
-	}
-	nodeID, ok := s.authenticateAgent(w, r)
-	if !ok {
-		return
-	}
-	var body struct {
-		Type      string         `json:"type"`
-		CommandID string         `json:"command_id"`
-		Payload   map[string]any `json:"payload"`
-	}
-	if err := readJSON(r, &body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
-		return
+func (s *Server) agentReport(req rpc.Request, remote string) rpc.Response {
+	nodeID, err := s.authenticateAgent(req, remote)
+	if err != nil {
+		return rpc.Response{OK: false, Error: err.Error()}
 	}
 
-	switch body.Type {
+	switch req.ReportType {
 	case "action.result":
-		if err := s.store.CompleteCommand(nodeID, body.CommandID, body.Payload); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-			return
+		log.Printf("action result node=%s command=%s ok=%v", nodeID, req.CommandID, req.Payload["ok"])
+		if err := s.store.CompleteCommand(nodeID, req.CommandID, req.Payload); err != nil {
+			return rpc.Response{OK: false, Error: err.Error()}
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		return rpc.Response{OK: true}
 	case "natter.result":
-		lease, err := leaseFromPayload(body.Payload)
+		lease, err := leaseFromPayload(req.Payload)
 		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
-			return
+			return rpc.Response{OK: false, Error: err.Error()}
 		}
 		bindings, err := s.store.SaveEndpointLease(nodeID, lease)
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-			return
+			return rpc.Response{OK: false, Error: err.Error()}
 		}
+		log.Printf("natter result node=%s interface=%s public=%s:%d bindings=%d", nodeID, lease.ServerInterface, lease.PublicIP, lease.PublicPort, len(bindings))
 		for _, b := range bindings {
 			cmd := protocol.NewCommand("endpoint.apply", map[string]any{
 				"binding_id":      b.ID,
@@ -124,109 +152,52 @@ func (s *Server) agentReport(w http.ResponseWriter, r *http.Request) {
 				"endpoint_port":   lease.PublicPort,
 			})
 			if err := s.store.QueueCommand(b.ClientNodeID, cmd); err != nil {
-				writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-				return
+				return rpc.Response{OK: false, Error: err.Error()}
 			}
+			log.Printf("queued endpoint.apply command node=%s binding=%s command=%s", b.ClientNodeID, b.ID, cmd.CommandID)
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "queued": len(bindings)})
+		return rpc.Response{OK: true, Queued: len(bindings)}
 	default:
-		_ = s.store.AddEvent("agent.report", "info", nodeID, "", "Agent report", body.Payload)
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		_ = s.store.AddEvent("agent.report", "info", nodeID, "", "Agent report", req.Payload)
+		return rpc.Response{OK: true}
 	}
 }
 
-func (s *Server) apiNodes(w http.ResponseWriter, r *http.Request) {
-	if !s.authenticateAdmin(w, r) {
-		return
+func (s *Server) adminRunNatter(req rpc.Request) rpc.Response {
+	if err := s.authenticateAdmin(req); err != nil {
+		return rpc.Response{OK: false, Error: err.Error()}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"nodes": s.store.Nodes()})
+	if req.ServerNodeID == "" || req.ServerInterface == "" {
+		return rpc.Response{OK: false, Error: "server_node_id and server_interface are required"}
+	}
+	cmd := protocol.NewCommand("natter.run", map[string]any{"server_interface": req.ServerInterface})
+	if err := s.store.QueueCommand(req.ServerNodeID, cmd); err != nil {
+		return rpc.Response{OK: false, Error: err.Error()}
+	}
+	log.Printf("queued natter.run command node=%s interface=%s command=%s", req.ServerNodeID, req.ServerInterface, cmd.CommandID)
+	return rpc.Response{OK: true, Command: &cmd}
 }
 
-func (s *Server) apiBindings(w http.ResponseWriter, r *http.Request) {
-	if !s.authenticateAdmin(w, r) {
-		return
+func (s *Server) authenticateAgent(req rpc.Request, remote string) (string, error) {
+	if req.NodeID == "" || req.Token == "" {
+		log.Printf("agent auth failed remote=%s node=%q reason=missing credentials", remote, req.NodeID)
+		return "", errors.New("missing node credentials")
 	}
-	switch r.Method {
-	case http.MethodGet:
-		writeJSON(w, http.StatusOK, map[string]any{"bindings": s.store.Bindings()})
-	case http.MethodPost:
-		var b store.Binding
-		if err := readJSON(r, &b); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
-			return
-		}
-		if b.ID == "" || b.ServerNodeID == "" || b.ClientNodeID == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "id, server_node_id and client_node_id are required"})
-			return
-		}
-		if err := s.store.AddBinding(b); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-	default:
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+	if _, ok := s.store.AuthenticateNode(req.NodeID, req.Token); !ok {
+		log.Printf("agent auth failed remote=%s node=%s reason=invalid token or unknown node", remote, req.NodeID)
+		return "", errors.New("invalid node credentials")
 	}
+	return req.NodeID, nil
 }
 
-func (s *Server) apiEvents(w http.ResponseWriter, r *http.Request) {
-	if !s.authenticateAdmin(w, r) {
-		return
-	}
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	if limit <= 0 {
-		limit = 100
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"events": s.store.Events(limit)})
-}
-
-func (s *Server) apiRunNatter(w http.ResponseWriter, r *http.Request) {
-	if !s.authenticateAdmin(w, r) {
-		return
-	}
-	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-		return
-	}
-	var body struct {
-		ServerNodeID    string `json:"server_node_id"`
-		ServerInterface string `json:"server_interface"`
-	}
-	if err := readJSON(r, &body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
-		return
-	}
-	cmd := protocol.NewCommand("natter.run", map[string]any{"server_interface": body.ServerInterface})
-	if err := s.store.QueueCommand(body.ServerNodeID, cmd); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "command": cmd})
-}
-
-func (s *Server) authenticateAgent(w http.ResponseWriter, r *http.Request) (string, bool) {
-	nodeID := r.Header.Get("X-Node-ID")
-	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if nodeID == "" || token == "" {
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "missing node credentials"})
-		return "", false
-	}
-	if _, ok := s.store.AuthenticateNode(nodeID, token); !ok {
-		writeJSON(w, http.StatusForbidden, map[string]any{"error": "invalid node credentials"})
-		return "", false
-	}
-	return nodeID, true
-}
-
-func (s *Server) authenticateAdmin(w http.ResponseWriter, r *http.Request) bool {
+func (s *Server) authenticateAdmin(req rpc.Request) error {
 	if s.adminToken == "" {
-		return true
+		return nil
 	}
-	if r.Header.Get("Authorization") == "Bearer "+s.adminToken {
-		return true
+	if req.AdminToken == s.adminToken {
+		return nil
 	}
-	writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid admin credentials"})
-	return false
+	return errors.New("invalid admin credentials")
 }
 
 func leaseFromPayload(payload map[string]any) (store.EndpointLease, error) {
@@ -269,24 +240,6 @@ func number(v any) (int, error) {
 	default:
 		return 0, fmt.Errorf("not a number")
 	}
-}
-
-func readJSON(r *http.Request, dst any) error {
-	defer r.Body.Close()
-	dec := json.NewDecoder(r.Body)
-	dec.UseNumber()
-	return dec.Decode(dst)
-}
-
-func writeJSON(w http.ResponseWriter, status int, data any) {
-	raw, err := json.Marshal(data)
-	if err != nil {
-		status = http.StatusInternalServerError
-		raw = []byte(`{"error":"json encode failed"}`)
-	}
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-	_, _ = w.Write(raw)
 }
 
 func CreateNode(path, id, name, role string) (string, error) {

@@ -6,18 +6,20 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
+	"log"
 	"os"
 	"os/exec"
 	"runtime"
 	"time"
 
 	"github.com/yfy/wireguard-natter-helper/internal/protocol"
+	"github.com/yfy/wireguard-natter-helper/internal/rpc"
 	"github.com/yfy/wireguard-natter-helper/internal/wgconfig"
 )
 
 type Config struct {
 	NodeID       string        `json:"node_id"`
+	DaemonAddr   string        `json:"daemon_addr"`
 	DaemonURL    string        `json:"daemon_url"`
 	Token        string        `json:"token"`
 	TokenFile    string        `json:"token_file"`
@@ -46,7 +48,7 @@ type NatterConfig struct {
 type Agent struct {
 	config Config
 	token  string
-	client *http.Client
+	addr   string
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -73,10 +75,18 @@ func New(cfg Config) (*Agent, error) {
 		}
 		token = string(bytes.TrimSpace(raw))
 	}
-	if cfg.NodeID == "" || cfg.DaemonURL == "" || token == "" {
-		return nil, errors.New("node_id, daemon_url and token/token_file are required")
+	addr := cfg.DaemonAddr
+	if addr == "" {
+		addr = cfg.DaemonURL
 	}
-	return &Agent{config: cfg, token: token, client: &http.Client{}}, nil
+	addr, err := rpc.NormalizeAddr(addr)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.NodeID == "" || addr == "" || token == "" {
+		return nil, errors.New("node_id, daemon_addr and token/token_file are required")
+	}
+	return &Agent{config: cfg, token: token, addr: addr}, nil
 }
 
 func (a *Agent) Run(ctx context.Context) error {
@@ -99,37 +109,44 @@ func (a *Agent) Run(ctx context.Context) error {
 }
 
 func (a *Agent) poll(ctx context.Context) (*protocol.Command, error) {
-	body := map[string]any{"meta": map[string]any{"platform": runtime.GOOS + "/" + runtime.GOARCH, "agent_version": protocol.Version}}
-	var resp struct {
-		OK      bool              `json:"ok"`
-		Command *protocol.Command `json:"command"`
-	}
-	if err := a.post(ctx, "/agent/poll", body, &resp); err != nil {
+	resp, err := rpc.Call(ctx, a.addr, rpc.Request{
+		Kind:   "agent.poll",
+		NodeID: a.config.NodeID,
+		Token:  a.token,
+		Meta:   map[string]any{"platform": runtime.GOOS + "/" + runtime.GOARCH, "agent_version": protocol.Version},
+	}, 40*time.Second)
+	if err != nil {
 		return nil, err
 	}
 	return resp.Command, nil
 }
 
 func (a *Agent) handle(ctx context.Context, cmd protocol.Command) {
+	log.Printf("received command id=%s action=%s", cmd.CommandID, cmd.Action)
 	switch cmd.Action {
 	case "natter.run":
 		result, err := a.runNatter(ctx, cmd.Payload)
 		if err != nil {
+			log.Printf("command id=%s action=%s failed: %v", cmd.CommandID, cmd.Action, err)
 			a.report(ctx, "action.result", cmd.CommandID, map[string]any{"ok": false, "error": err.Error()})
 			return
 		}
 		_ = a.report(ctx, "natter.result", "", result)
 		_ = a.report(ctx, "action.result", cmd.CommandID, map[string]any{"ok": true, "detail": "natter completed"})
+		log.Printf("command id=%s action=%s completed public=%s:%d", cmd.CommandID, cmd.Action, stringField(result, "public_ip"), intField(result, "public_port"))
 	case "endpoint.apply":
 		result, err := a.applyEndpoint(cmd.Payload)
 		if err != nil {
+			log.Printf("command id=%s action=%s failed: %v", cmd.CommandID, cmd.Action, err)
 			a.report(ctx, "action.result", cmd.CommandID, map[string]any{"ok": false, "binding_id": stringField(cmd.Payload, "binding_id"), "error": err.Error()})
 			return
 		}
 		_ = a.report(ctx, "action.result", cmd.CommandID, map[string]any{
 			"ok": true, "binding_id": stringField(cmd.Payload, "binding_id"), "changed": result.Changed, "message": result.Message,
 		})
+		log.Printf("command id=%s action=%s completed binding=%s changed=%t message=%q", cmd.CommandID, cmd.Action, stringField(cmd.Payload, "binding_id"), result.Changed, result.Message)
 	default:
+		log.Printf("command id=%s action=%s unsupported", cmd.CommandID, cmd.Action)
 		_ = a.report(ctx, "action.result", cmd.CommandID, map[string]any{"ok": false, "error": "unsupported action: " + cmd.Action})
 	}
 }
@@ -150,9 +167,11 @@ func (a *Agent) runNatter(ctx context.Context, payload map[string]any) (map[stri
 		if err != nil {
 			return nil, err
 		}
+		log.Printf("stopping WireGuard interface=%s method=%s before natter", serverInterface, method)
 		if err := wgconfig.StopInterface(serverInterface, method); err != nil {
 			return nil, fmt.Errorf("stop WireGuard interface %s failed: %w", serverInterface, err)
 		}
+		log.Printf("stopped WireGuard interface=%s", serverInterface)
 		stoppedWireGuard = true
 		controlMethod = method
 	}
@@ -163,6 +182,7 @@ func (a *Agent) runNatter(ctx context.Context, payload map[string]any) (map[stri
 	}
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	log.Printf("running natter command for interface=%s timeout=%s", serverInterface, timeout)
 	cmd := exec.CommandContext(runCtx, a.config.Natter.Command[0], a.config.Natter.Command[1:]...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -182,6 +202,7 @@ func (a *Agent) runNatter(ctx context.Context, payload map[string]any) (map[stri
 		return nil, startErr
 	}
 	result["server_interface"] = serverInterface
+	log.Printf("natter result interface=%s public=%s:%d local=%s:%d", serverInterface, stringField(result, "public_ip"), intField(result, "public_port"), stringField(result, "local_ip"), intField(result, "local_port"))
 	return result, nil
 }
 
@@ -190,11 +211,14 @@ func (a *Agent) restartWireGuardIfNeeded(interfaceName, method string, stopped b
 		return nil
 	}
 	if delay := a.config.Natter.RestartDelaySeconds; delay > 0 {
+		log.Printf("waiting %d seconds before restarting WireGuard interface=%s", delay, interfaceName)
 		time.Sleep(time.Duration(delay) * time.Second)
 	}
+	log.Printf("starting WireGuard interface=%s method=%s after natter", interfaceName, method)
 	if err := wgconfig.StartInterface(interfaceName, method); err != nil {
 		return fmt.Errorf("start WireGuard interface %s failed: %w", interfaceName, err)
 	}
+	log.Printf("started WireGuard interface=%s", interfaceName)
 	return nil
 }
 
@@ -251,35 +275,15 @@ func (a *Agent) applyEndpoint(payload map[string]any) (wgconfig.ApplyResult, err
 }
 
 func (a *Agent) report(ctx context.Context, typ, commandID string, payload map[string]any) error {
-	body := map[string]any{"type": typ, "payload": payload}
-	if commandID != "" {
-		body["command_id"] = commandID
-	}
-	var resp map[string]any
-	return a.post(ctx, "/agent/report", body, &resp)
-}
-
-func (a *Agent) post(ctx context.Context, path string, body any, dst any) error {
-	raw, err := json.Marshal(body)
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.config.DaemonURL+path, bytes.NewReader(raw))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Node-ID", a.config.NodeID)
-	req.Header.Set("Authorization", "Bearer "+a.token)
-	resp, err := a.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return fmt.Errorf("daemon returned %s", resp.Status)
-	}
-	return json.NewDecoder(resp.Body).Decode(dst)
+	_, err := rpc.Call(ctx, a.addr, rpc.Request{
+		Kind:       "agent.report",
+		NodeID:     a.config.NodeID,
+		Token:      a.token,
+		ReportType: typ,
+		CommandID:  commandID,
+		Payload:    payload,
+	}, 10*time.Second)
+	return err
 }
 
 func stringField(payload map[string]any, key string) string {

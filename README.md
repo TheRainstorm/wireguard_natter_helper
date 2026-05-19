@@ -8,7 +8,7 @@
 - A 机器上运行 `agent`，负责执行 natter 并把新的公网 endpoint 上报给 VPS。
 - B/C/D 机器上运行 `agent`，负责接收新 endpoint，并更新本机 WireGuard 配置。
 
-目前还没有 Web UI，也还没有自动判断 WireGuard 是否断线；当前需要手动调用 API 触发 A 运行 natter。
+目前还没有 Web UI，也还没有自动判断 WireGuard 是否断线；当前需要手动执行管理命令触发 A 运行 natter。
 
 ## 先理解三个角色
 
@@ -129,11 +129,11 @@ ADMIN_TOKEN='change-this-to-a-long-random-string'
 ```sh
 ./wgnh daemon serve \
   --state /etc/wgnh/state.json \
-  --addr 0.0.0.0:8080 \
+  --addr 0.0.0.0:3333 \
   --admin-token "$ADMIN_TOKEN"
 ```
 
-真实部署时不要直接裸露 HTTP。建议用 Caddy 或 Nginx 在前面提供 HTTPS，然后 agent 连接 HTTPS 地址。
+daemon 监听的是自定义 TCP JSON-line 协议，不是 HTTP。请在防火墙里只放行需要访问的来源。
 
 ## 第四步：在 A 上配置 agent
 
@@ -142,7 +142,7 @@ ADMIN_TOKEN='change-this-to-a-long-random-string'
 ```json
 {
   "node_id": "home-a",
-  "daemon_url": "https://你的VPS域名",
+  "daemon_addr": "你的VPS域名:3333",
   "token": "第一步创建 home-a 时输出的 token",
   "role": "server",
   "retry_seconds": 5,
@@ -234,7 +234,7 @@ ADMIN_TOKEN='change-this-to-a-long-random-string'
 ```json
 {
   "node_id": "office-b",
-  "daemon_url": "https://你的VPS域名",
+  "daemon_addr": "你的VPS域名:3333",
   "token": "第一步创建 office-b 时输出的 token",
   "role": "client",
   "retry_seconds": 5,
@@ -261,10 +261,11 @@ ADMIN_TOKEN='change-this-to-a-long-random-string'
 在任意能访问 VPS daemon 的机器上执行：
 
 ```sh
-curl -X POST https://你的VPS域名/api/actions/run-natter \
-  -H 'Content-Type: application/json' \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -d '{"server_node_id":"home-a","server_interface":"wg0"}'
+./wgnh daemon run-natter \
+  --addr 你的VPS域名:3333 \
+  --admin-token "$ADMIN_TOKEN" \
+  --server-node home-a \
+  --server-interface wg0
 ```
 
 执行后流程是：
@@ -283,22 +284,25 @@ curl -X POST https://你的VPS域名/api/actions/run-natter \
 查看节点：
 
 ```sh
-curl https://你的VPS域名/api/nodes \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
+./wgnh daemon nodes \
+  --addr 你的VPS域名:3333 \
+  --admin-token "$ADMIN_TOKEN"
 ```
 
 查看绑定关系：
 
 ```sh
-curl https://你的VPS域名/api/bindings \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
+./wgnh daemon bindings \
+  --addr 你的VPS域名:3333 \
+  --admin-token "$ADMIN_TOKEN"
 ```
 
 查看事件：
 
 ```sh
-curl https://你的VPS域名/api/events \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
+./wgnh daemon events \
+  --addr 你的VPS域名:3333 \
+  --admin-token "$ADMIN_TOKEN"
 ```
 
 ## 本地试跑，不改真实配置
@@ -331,7 +335,7 @@ go build -o wgnh ./cmd/wgnh
 启动 daemon：
 
 ```sh
-./wgnh daemon serve --state ./tmp-state.json --addr 127.0.0.1:8080 --admin-token test-admin
+./wgnh daemon serve --state ./tmp-state.json --addr 127.0.0.1:3333 --admin-token test-admin
 ```
 
 再开两个终端分别启动：
@@ -344,10 +348,11 @@ go build -o wgnh ./cmd/wgnh
 最后触发：
 
 ```sh
-curl -X POST http://127.0.0.1:8080/api/actions/run-natter \
-  -H 'Content-Type: application/json' \
-  -H 'Authorization: Bearer test-admin' \
-  -d '{"server_node_id":"home-a","server_interface":"wg0"}'
+./wgnh daemon run-natter \
+  --addr 127.0.0.1:3333 \
+  --admin-token test-admin \
+  --server-node home-a \
+  --server-interface wg0
 ```
 
 这个本地例子里，client 配置默认是 `"dry_run": true`，所以不会真的修改系统配置。
@@ -356,6 +361,37 @@ curl -X POST http://127.0.0.1:8080/api/actions/run-natter \
 
 - 还没有 Web UI。
 - 还没有自动检测 WireGuard 断线。
-- 当前 natter 集成需要包装脚本输出 JSON。
+- 当前 natter 集成要求命令输出一行 JSON；本仓库的 `3dparty/Natter/natter.py --map-only` 已支持。
 - 当前状态文件是 JSON，不是 SQLite。
-- 当前通信建议放在 HTTPS 反代后面使用。
+- 当前通信是自定义 TCP 明文协议，建议通过防火墙限制来源；后续可增加 TLS 或消息加密。
+
+## 常见问题
+
+### agent 一直报 invalid node credentials
+
+`invalid node credentials` 表示 agent 已经连到 daemon，但 daemon 拒绝了节点凭据。通常是下面几种情况：
+
+- agent 配置里的 `node_id` 写错了。
+- agent 配置里的 `token` 不是这个节点当前的 token。
+- 在 VPS 上重新执行过 `daemon create-node --id <同一个节点>`，这会轮换该节点 token，旧 token 会失效。
+- daemon 启动时使用了另一个 `--state` 文件，里面没有这个节点或 token hash 不一致。
+
+排查方法：
+
+```sh
+./wgnh daemon nodes \
+  --addr 你的VPS:3333 \
+  --admin-token "<admin-token>"
+```
+
+确认列表里有对应的 `node_id`。如果不确定 token 是否正确，重新执行：
+
+```sh
+./wgnh daemon create-node --state /etc/wgnh/state.json --id home-a --role server
+```
+
+然后把新输出的 token 更新到 A 的 agent 配置里，并重启 agent。
+
+### agent 显示 connection reset by peer
+
+这表示 TCP 连接被对端或中间设备断开。常见原因是 daemon 重启、防火墙/NAT 断开长轮询连接。agent 会自动重试；如果后续变成 `invalid node credentials`，就按上面的 token 问题排查。

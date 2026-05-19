@@ -1,6 +1,6 @@
 {
   "node_id": "home-a",
-  "daemon_url": "https://your-vps.example.com",
+  "daemon_addr": "your-vps.example.com:3333",
   "token": "replace-with-home-a-token",
   "role": "server",
   "retry_seconds": 5,
