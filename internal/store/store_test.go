@@ -3,6 +3,7 @@ package store
 import (
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/yfy/wireguard-natter-helper/internal/auth"
 	"github.com/yfy/wireguard-natter-helper/internal/protocol"
@@ -37,5 +38,15 @@ func TestStoreAuthAndCommandQueue(t *testing.T) {
 	}
 	if got == nil || got.CommandID != cmd.CommandID || got.Action != "natter.run" {
 		t.Fatalf("unexpected command: %#v", got)
+	}
+}
+
+func TestDisplayStatusMarksStaleNodeOffline(t *testing.T) {
+	node := Node{
+		Status:     "online",
+		LastSeenAt: time.Now().Add(-2 * time.Minute).UTC().Format(time.RFC3339),
+	}
+	if got := displayStatus(node); got != "offline" {
+		t.Fatalf("expected offline, got %s", got)
 	}
 }

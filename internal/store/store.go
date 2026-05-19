@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/yfy/wireguard-natter-helper/internal/auth"
 	"github.com/yfy/wireguard-natter-helper/internal/protocol"
@@ -248,9 +249,24 @@ func (s *Store) Nodes() []Node {
 	out := make([]Node, 0, len(s.data.Nodes))
 	for _, n := range s.data.Nodes {
 		n.TokenHash = ""
+		n.Status = displayStatus(n)
 		out = append(out, n)
 	}
 	return out
+}
+
+func displayStatus(n Node) string {
+	if n.LastSeenAt == "" {
+		return "offline"
+	}
+	lastSeen, err := time.Parse(time.RFC3339, n.LastSeenAt)
+	if err != nil {
+		return n.Status
+	}
+	if time.Since(lastSeen) > 90*time.Second {
+		return "offline"
+	}
+	return n.Status
 }
 
 func (s *Store) Bindings() []Binding {
