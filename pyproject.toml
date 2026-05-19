@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wireguard-natter-helper"
+version = "0.1.0"
+description = "Control-plane helper for updating WireGuard endpoints discovered by natter."
+requires-python = ">=3.11"
+
+[project.scripts]
+wgnh = "wgnh.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["wgnh*"]

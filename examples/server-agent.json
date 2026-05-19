@@ -1,0 +1,21 @@
+{
+  "node_id": "home-a",
+  "daemon_url": "http://127.0.0.1:8080",
+  "token": "replace-with-node-token",
+  "role": "server",
+  "retry_seconds": 5,
+  "wireguard": [
+    {
+      "name": "wg0",
+      "listen_port": 51820,
+      "config_type": "openwrt_uci"
+    }
+  ],
+  "natter": {
+    "command": [
+      "python3",
+      "examples/fake-natter.py"
+    ],
+    "timeout_seconds": 30
+  }
+}
