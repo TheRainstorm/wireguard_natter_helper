@@ -30,13 +30,22 @@ type Request struct {
 }
 
 type Response struct {
-	OK       bool              `json:"ok"`
-	Error    string            `json:"error,omitempty"`
-	Command  *protocol.Command `json:"command,omitempty"`
-	Queued   int               `json:"queued,omitempty"`
-	Nodes    []store.Node      `json:"nodes,omitempty"`
-	Bindings []store.Binding   `json:"bindings,omitempty"`
-	Events   []store.Event     `json:"events,omitempty"`
+	OK           bool              `json:"ok"`
+	Error        string            `json:"error,omitempty"`
+	Command      *protocol.Command `json:"command,omitempty"`
+	MonitorPeers []MonitorPeer     `json:"monitor_peers,omitempty"`
+	Queued       int               `json:"queued,omitempty"`
+	Nodes        []store.Node      `json:"nodes,omitempty"`
+	Bindings     []store.Binding   `json:"bindings,omitempty"`
+	Events       []store.Event     `json:"events,omitempty"`
+}
+
+type MonitorPeer struct {
+	BindingID       string `json:"binding_id"`
+	Interface       string `json:"interface"`
+	PeerPublicKey   string `json:"peer_public_key"`
+	ServerNodeID    string `json:"server_node_id"`
+	ServerInterface string `json:"server_interface"`
 }
 
 func NormalizeAddr(addr string) (string, error) {

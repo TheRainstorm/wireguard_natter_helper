@@ -124,7 +124,24 @@ func (s *Server) agentPoll(req rpc.Request, remote string) rpc.Response {
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	return rpc.Response{OK: true, Command: cmd}
+	return rpc.Response{OK: true, Command: cmd, MonitorPeers: s.monitorPeersForNode(nodeID)}
+}
+
+func (s *Server) monitorPeersForNode(nodeID string) []rpc.MonitorPeer {
+	var peers []rpc.MonitorPeer
+	for _, binding := range s.store.Bindings() {
+		if !binding.Enabled || binding.ClientNodeID != nodeID {
+			continue
+		}
+		peers = append(peers, rpc.MonitorPeer{
+			BindingID:       binding.ID,
+			Interface:       binding.ClientInterface,
+			PeerPublicKey:   binding.PeerPublicKey,
+			ServerNodeID:    binding.ServerNodeID,
+			ServerInterface: binding.ServerInterface,
+		})
+	}
+	return peers
 }
 
 func (s *Server) agentReport(req rpc.Request, remote string) rpc.Response {

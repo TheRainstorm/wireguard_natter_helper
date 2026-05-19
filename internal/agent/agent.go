@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/yfy/wireguard-natter-helper/internal/protocol"
@@ -65,9 +66,11 @@ type MonitorPeer struct {
 }
 
 type Agent struct {
-	config Config
-	token  string
-	addr   string
+	config       Config
+	token        string
+	addr         string
+	monitorMu    sync.RWMutex
+	monitorPeers []MonitorPeer
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -105,7 +108,7 @@ func New(cfg Config) (*Agent, error) {
 	if cfg.NodeID == "" || addr == "" || token == "" {
 		return nil, errors.New("node_id, daemon_addr and token/token_file are required")
 	}
-	return &Agent{config: cfg, token: token, addr: addr}, nil
+	return &Agent{config: cfg, token: token, addr: addr, monitorPeers: cfg.Monitor.Peers}, nil
 }
 
 func (a *Agent) Run(ctx context.Context) error {
@@ -147,13 +150,18 @@ func (a *Agent) runMonitor(ctx context.Context) {
 	unreachable := map[string]bool{}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	log.Printf("monitor started peers=%d interval=%s stale=%s fail_threshold=%d", len(a.config.Monitor.Peers), interval, stale, failThreshold)
+	log.Printf("monitor started interval=%s stale=%s fail_threshold=%d", interval, stale, failThreshold)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			for _, peer := range a.config.Monitor.Peers {
+			peers := a.currentMonitorPeers()
+			if len(peers) == 0 {
+				log.Printf("monitor has no peers yet; waiting for daemon binding sync")
+				continue
+			}
+			for _, peer := range peers {
 				key := peer.BindingID
 				if key == "" {
 					key = peer.Interface + "/" + peer.PeerPublicKey
@@ -209,7 +217,34 @@ func (a *Agent) poll(ctx context.Context) (*protocol.Command, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(resp.MonitorPeers) > 0 {
+		a.setMonitorPeers(resp.MonitorPeers)
+	}
 	return resp.Command, nil
+}
+
+func (a *Agent) setMonitorPeers(peers []rpc.MonitorPeer) {
+	next := make([]MonitorPeer, 0, len(peers))
+	for _, peer := range peers {
+		next = append(next, MonitorPeer{
+			BindingID:       peer.BindingID,
+			Interface:       peer.Interface,
+			PeerPublicKey:   peer.PeerPublicKey,
+			ServerNodeID:    peer.ServerNodeID,
+			ServerInterface: peer.ServerInterface,
+		})
+	}
+	a.monitorMu.Lock()
+	a.monitorPeers = next
+	a.monitorMu.Unlock()
+}
+
+func (a *Agent) currentMonitorPeers() []MonitorPeer {
+	a.monitorMu.RLock()
+	defer a.monitorMu.RUnlock()
+	peers := make([]MonitorPeer, len(a.monitorPeers))
+	copy(peers, a.monitorPeers)
+	return peers
 }
 
 func (a *Agent) handle(ctx context.Context, cmd protocol.Command) {

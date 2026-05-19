@@ -15,15 +15,6 @@
     "enabled": true,
     "interval_seconds": 30,
     "stale_seconds": 180,
-    "fail_threshold": 3,
-    "peers": [
-      {
-        "binding_id": "home-a-wg0-office-b",
-        "interface": "wg0",
-        "peer_public_key": "replace-with-home-a-public-key",
-        "server_node_id": "home-a",
-        "server_interface": "wg0"
-      }
-    ]
+    "fail_threshold": 3
   }
 }
