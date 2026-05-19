@@ -163,7 +163,17 @@ func writeJSON(w http.ResponseWriter, status int, data any) {
 	_, _ = w.Write(raw)
 }
 
-var pageTemplate = template.Must(template.New("index").Parse(pageHTML))
+var pageTemplate = template.Must(template.New("index").Funcs(template.FuncMap{
+	"json": compactJSON,
+}).Parse(pageHTML))
+
+func compactJSON(v any) string {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
 
 const pageHTML = `<!doctype html>
 <html lang="zh-CN">
@@ -319,7 +329,7 @@ const pageHTML = `<!doctype html>
     <div class="top">
       <div>
         <h1>WireGuard Natter Helper</h1>
-        <div class="sub">daemon <code>{{.DaemonAddr}}</code> · {{.GeneratedAt}}</div>
+        <div class="sub">daemon <code>{{.DaemonAddr}}</code> · {{.GeneratedAt}} · 自动刷新 15s</div>
       </div>
       <div class="toolbar">
         <button class="secondary" onclick="location.reload()">刷新</button>
@@ -385,7 +395,7 @@ const pageHTML = `<!doctype html>
       <div class="section-head"><h2>最近事件</h2></div>
       <div class="scroll">
         <table>
-          <thead><tr><th>时间</th><th>级别</th><th>类型</th><th>节点</th><th>绑定</th><th>消息</th></tr></thead>
+          <thead><tr><th>时间</th><th>级别</th><th>类型</th><th>节点</th><th>绑定</th><th>消息</th><th>Payload</th></tr></thead>
           <tbody>
             {{range .Events}}
             <tr>
@@ -395,9 +405,10 @@ const pageHTML = `<!doctype html>
               <td>{{.NodeID}}</td>
               <td>{{.BindingID}}</td>
               <td class="wrap">{{.Message}}</td>
+              <td class="wrap"><code>{{json .Payload}}</code></td>
             </tr>
             {{else}}
-            <tr><td colspan="6" class="empty">暂无事件</td></tr>
+            <tr><td colspan="7" class="empty">暂无事件</td></tr>
             {{end}}
           </tbody>
         </table>
@@ -406,6 +417,7 @@ const pageHTML = `<!doctype html>
   </main>
   <div id="toast" class="toast"></div>
   <script>
+    setTimeout(() => location.reload(), 15000);
     function toast(text) {
       const el = document.getElementById('toast');
       el.textContent = text;
