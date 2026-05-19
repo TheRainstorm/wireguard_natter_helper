@@ -4,5 +4,8 @@ __pycache__/
 *.db
 *.db-shm
 *.db-wal
+wgnh
+wgnh-state.json
+*.tmp
 .pytest_cache/
 .venv/
