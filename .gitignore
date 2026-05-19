@@ -4,9 +4,10 @@ __pycache__/
 *.db
 *.db-shm
 *.db-wal
-wgnh
-wgnh-*
+/wgnh
+/wgnh-*
 wgnh-state.json
 *.tmp
 .pytest_cache/
 .venv/
+compile_and_scp.sh

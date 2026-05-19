@@ -144,7 +144,17 @@ func (a *Agent) handle(ctx context.Context, cmd protocol.Command) {
 		_ = a.report(ctx, "action.result", cmd.CommandID, map[string]any{
 			"ok": true, "binding_id": stringField(cmd.Payload, "binding_id"), "changed": result.Changed, "message": result.Message,
 		})
-		log.Printf("command id=%s action=%s completed binding=%s changed=%t message=%q", cmd.CommandID, cmd.Action, stringField(cmd.Payload, "binding_id"), result.Changed, result.Message)
+		log.Printf(
+			"command id=%s action=%s completed binding=%s interface=%s endpoint=%s:%d changed=%t message=%q",
+			cmd.CommandID,
+			cmd.Action,
+			stringField(cmd.Payload, "binding_id"),
+			stringField(cmd.Payload, "interface"),
+			stringField(cmd.Payload, "endpoint_host"),
+			intField(cmd.Payload, "endpoint_port"),
+			result.Changed,
+			result.Message,
+		)
 	default:
 		log.Printf("command id=%s action=%s unsupported", cmd.CommandID, cmd.Action)
 		_ = a.report(ctx, "action.result", cmd.CommandID, map[string]any{"ok": false, "error": "unsupported action: " + cmd.Action})
