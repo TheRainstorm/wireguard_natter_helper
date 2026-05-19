@@ -39,3 +39,16 @@ func TestWireGuardControlMethodDefaultsByConfigType(t *testing.T) {
 		t.Fatalf("expected wg-quick, got %s", got)
 	}
 }
+
+func TestParseLatestHandshakes(t *testing.T) {
+	got, err := ParseLatestHandshakes("peer-a 1710000000\npeer-b\t0\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["peer-a"] != 1710000000 {
+		t.Fatalf("unexpected peer-a timestamp: %d", got["peer-a"])
+	}
+	if got["peer-b"] != 0 {
+		t.Fatalf("unexpected peer-b timestamp: %d", got["peer-b"])
+	}
+}

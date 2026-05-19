@@ -10,6 +10,8 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/yfy/wireguard-natter-helper/internal/protocol"
@@ -28,6 +30,7 @@ type Config struct {
 	DryRun       bool          `json:"dry_run"`
 	WireGuard    []WGInterface `json:"wireguard"`
 	Natter       NatterConfig  `json:"natter"`
+	Monitor      MonitorConfig `json:"monitor"`
 }
 
 type WGInterface struct {
@@ -43,6 +46,22 @@ type NatterConfig struct {
 	StopWireGuard          bool     `json:"stop_wireguard"`
 	WireGuardControlMethod string   `json:"wireguard_control_method"`
 	RestartDelaySeconds    int      `json:"restart_delay_seconds"`
+}
+
+type MonitorConfig struct {
+	Enabled         bool          `json:"enabled"`
+	IntervalSeconds int           `json:"interval_seconds"`
+	StaleSeconds    int           `json:"stale_seconds"`
+	FailThreshold   int           `json:"fail_threshold"`
+	Peers           []MonitorPeer `json:"peers"`
+}
+
+type MonitorPeer struct {
+	BindingID       string `json:"binding_id"`
+	Interface       string `json:"interface"`
+	PeerPublicKey   string `json:"peer_public_key"`
+	ServerNodeID    string `json:"server_node_id"`
+	ServerInterface string `json:"server_interface"`
 }
 
 type Agent struct {
@@ -90,6 +109,9 @@ func New(cfg Config) (*Agent, error) {
 }
 
 func (a *Agent) Run(ctx context.Context) error {
+	if a.config.Monitor.Enabled {
+		go a.runMonitor(ctx)
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -104,6 +126,75 @@ func (a *Agent) Run(ctx context.Context) error {
 		}
 		if cmd != nil {
 			a.handle(ctx, *cmd)
+		}
+	}
+}
+
+func (a *Agent) runMonitor(ctx context.Context) {
+	interval := time.Duration(a.config.Monitor.IntervalSeconds) * time.Second
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	stale := time.Duration(a.config.Monitor.StaleSeconds) * time.Second
+	if stale <= 0 {
+		stale = 180 * time.Second
+	}
+	failThreshold := a.config.Monitor.FailThreshold
+	if failThreshold <= 0 {
+		failThreshold = 3
+	}
+	failCounts := map[string]int{}
+	unreachable := map[string]bool{}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	log.Printf("monitor started peers=%d interval=%s stale=%s fail_threshold=%d", len(a.config.Monitor.Peers), interval, stale, failThreshold)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			for _, peer := range a.config.Monitor.Peers {
+				key := peer.BindingID
+				if key == "" {
+					key = peer.Interface + "/" + peer.PeerPublicKey
+				}
+				status, err := probePeer(peer, stale)
+				if err != nil {
+					log.Printf("monitor probe failed binding=%s interface=%s error=%v", peer.BindingID, peer.Interface, err)
+					continue
+				}
+				if status.Stale {
+					failCounts[key]++
+					log.Printf("monitor stale binding=%s interface=%s peer=%s age=%s failures=%d/%d", peer.BindingID, peer.Interface, shortKey(peer.PeerPublicKey), status.Age, failCounts[key], failThreshold)
+					if failCounts[key] >= failThreshold && !unreachable[key] {
+						unreachable[key] = true
+						_ = a.report(ctx, "peer.unreachable", "", map[string]any{
+							"binding_id":       peer.BindingID,
+							"interface":        peer.Interface,
+							"peer_public_key":  peer.PeerPublicKey,
+							"server_node_id":   peer.ServerNodeID,
+							"server_interface": peer.ServerInterface,
+							"last_handshake":   status.LastHandshake,
+							"age_seconds":      int(status.Age.Seconds()),
+							"stale_seconds":    int(stale.Seconds()),
+						})
+					}
+					continue
+				}
+				if unreachable[key] {
+					_ = a.report(ctx, "peer.recovered", "", map[string]any{
+						"binding_id":       peer.BindingID,
+						"interface":        peer.Interface,
+						"peer_public_key":  peer.PeerPublicKey,
+						"server_node_id":   peer.ServerNodeID,
+						"server_interface": peer.ServerInterface,
+						"last_handshake":   status.LastHandshake,
+					})
+					log.Printf("monitor recovered binding=%s interface=%s peer=%s", peer.BindingID, peer.Interface, shortKey(peer.PeerPublicKey))
+				}
+				failCounts[key] = 0
+				unreachable[key] = false
+			}
 		}
 	}
 }
@@ -313,4 +404,61 @@ func intField(payload map[string]any, key string) int {
 	default:
 		return 0
 	}
+}
+
+type peerProbeStatus struct {
+	LastHandshake int64
+	Age           time.Duration
+	Stale         bool
+}
+
+func probePeer(peer MonitorPeer, staleAfter time.Duration) (peerProbeStatus, error) {
+	handshakes, err := latestHandshakes(peer.Interface)
+	if err != nil {
+		return peerProbeStatus{}, err
+	}
+	ts, ok := handshakes[peer.PeerPublicKey]
+	if !ok {
+		return peerProbeStatus{LastHandshake: 0, Age: time.Duration(1<<63 - 1), Stale: true}, nil
+	}
+	if ts <= 0 {
+		return peerProbeStatus{LastHandshake: 0, Age: time.Duration(1<<63 - 1), Stale: true}, nil
+	}
+	age := time.Since(time.Unix(ts, 0))
+	return peerProbeStatus{LastHandshake: ts, Age: age, Stale: age > staleAfter}, nil
+}
+
+func latestHandshakes(interfaceName string) (map[string]int64, error) {
+	out, err := exec.Command("wg", "show", interfaceName, "latest-handshakes").Output()
+	if err != nil {
+		return nil, fmt.Errorf("wg show %s latest-handshakes failed: %w", interfaceName, err)
+	}
+	return ParseLatestHandshakes(string(out))
+}
+
+func ParseLatestHandshakes(raw string) (map[string]int64, error) {
+	result := map[string]int64{}
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			return nil, fmt.Errorf("invalid latest-handshakes line: %q", line)
+		}
+		ts, err := strconv.ParseInt(fields[1], 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid latest-handshake timestamp for peer %s: %w", fields[0], err)
+		}
+		result[fields[0]] = ts
+	}
+	return result, nil
+}
+
+func shortKey(key string) string {
+	if len(key) <= 12 {
+		return key
+	}
+	return key[:6] + "..." + key[len(key)-6:]
 }

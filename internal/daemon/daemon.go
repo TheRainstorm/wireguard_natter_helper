@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/yfy/wireguard-natter-helper/internal/auth"
@@ -15,13 +16,22 @@ import (
 )
 
 type Server struct {
-	store      *store.Store
-	adminToken string
-	pollWait   time.Duration
+	store          *store.Store
+	adminToken     string
+	pollWait       time.Duration
+	natterCooldown time.Duration
+	natterMu       sync.Mutex
+	lastNatterRun  map[string]time.Time
 }
 
 func New(st *store.Store, adminToken string) *Server {
-	return &Server{store: st, adminToken: adminToken, pollWait: 25 * time.Second}
+	return &Server{
+		store:          st,
+		adminToken:     adminToken,
+		pollWait:       25 * time.Second,
+		natterCooldown: 5 * time.Minute,
+		lastNatterRun:  map[string]time.Time{},
+	}
 }
 
 func (s *Server) ListenAndServe(addr string) error {
@@ -157,10 +167,41 @@ func (s *Server) agentReport(req rpc.Request, remote string) rpc.Response {
 			log.Printf("queued endpoint.apply command node=%s binding=%s command=%s", b.ClientNodeID, b.ID, cmd.CommandID)
 		}
 		return rpc.Response{OK: true, Queued: len(bindings)}
+	case "peer.unreachable":
+		return s.peerUnreachable(nodeID, req.Payload)
+	case "peer.recovered":
+		_ = s.store.AddEvent("peer.recovered", "info", nodeID, stringValue(req.Payload["binding_id"]), "Peer handshake recovered", req.Payload)
+		log.Printf("peer recovered node=%s binding=%s interface=%s", nodeID, stringValue(req.Payload["binding_id"]), stringValue(req.Payload["interface"]))
+		return rpc.Response{OK: true}
 	default:
 		_ = s.store.AddEvent("agent.report", "info", nodeID, "", "Agent report", req.Payload)
 		return rpc.Response{OK: true}
 	}
+}
+
+func (s *Server) peerUnreachable(nodeID string, payload map[string]any) rpc.Response {
+	serverNodeID := stringValue(payload["server_node_id"])
+	serverInterface := stringValue(payload["server_interface"])
+	bindingID := stringValue(payload["binding_id"])
+	if serverNodeID == "" || serverInterface == "" {
+		return rpc.Response{OK: false, Error: "peer.unreachable requires server_node_id and server_interface"}
+	}
+	_ = s.store.AddEvent("peer.unreachable", "warning", nodeID, bindingID, "Peer handshake is stale", payload)
+	key := serverNodeID + "/" + serverInterface
+	now := time.Now()
+	s.natterMu.Lock()
+	defer s.natterMu.Unlock()
+	if last := s.lastNatterRun[key]; !last.IsZero() && now.Sub(last) < s.natterCooldown {
+		log.Printf("auto natter suppressed by cooldown server=%s interface=%s binding=%s remaining=%s", serverNodeID, serverInterface, bindingID, s.natterCooldown-now.Sub(last))
+		return rpc.Response{OK: true}
+	}
+	cmd := protocol.NewCommand("natter.run", map[string]any{"server_interface": serverInterface})
+	if err := s.store.QueueCommand(serverNodeID, cmd); err != nil {
+		return rpc.Response{OK: false, Error: err.Error()}
+	}
+	s.lastNatterRun[key] = now
+	log.Printf("auto queued natter.run server=%s interface=%s binding=%s command=%s", serverNodeID, serverInterface, bindingID, cmd.CommandID)
+	return rpc.Response{OK: true, Command: &cmd}
 }
 
 func (s *Server) adminRunNatter(req rpc.Request) rpc.Response {
