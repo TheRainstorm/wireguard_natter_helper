@@ -34,6 +34,12 @@ func New(st *store.Store, adminToken string) *Server {
 	}
 }
 
+func (s *Server) SetNatterCooldown(cooldown time.Duration) {
+	if cooldown > 0 {
+		s.natterCooldown = cooldown
+	}
+}
+
 func (s *Server) ListenAndServe(addr string) error {
 	addr, err := rpc.NormalizeAddr(addr)
 	if err != nil {
