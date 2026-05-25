@@ -64,19 +64,21 @@ Install only the service you need on each machine. For example, the VPS usually 
 
 ### OpenWrt
 
-For a LuCI dashboard, install the package built by GitHub Actions:
+For OpenWrt, install both packages from the GitHub Release or Actions artifacts:
 
 ```sh
-opkg install ./luci-app-wgnh_*.ipk
+opkg install ./wgnh_*.ipk ./luci-app-wgnh_*.ipk
 /etc/init.d/uhttpd restart
 ```
 
-Open LuCI and go to `VPN` -> `WG Natter`. The LuCI page reads daemon status by executing `/usr/bin/wgnh daemon nodes|bindings|events` on the router, so the `wgnh` binary still needs to be installed separately. Configure daemon address and admin token in `WG Natter` -> `Settings`.
+The `wgnh` package installs the binary at `/usr/bin/wgnh`. The `luci-app-wgnh` package installs the LuCI page, UCI config, and OpenWrt services. Open LuCI and go to `VPN` -> `WG Natter`. Configure daemon address and admin token in `WG Natter` -> `Settings`.
 
-The package source lives in `openwrt/luci-app-wgnh`. GitHub Actions builds ipk artifacts for:
+The package sources live in `openwrt/wgnh` and `openwrt/luci-app-wgnh`. GitHub Actions builds ipk artifacts for:
 
 - `amd64`: OpenWrt `x86/64`
 - `arm64`: OpenWrt `armsr/armv8`
+
+Tagged releases such as `v0.1.0` publish the built ipk files to GitHub Releases. Non-tag workflow runs keep the ipk files as Actions artifacts.
 
 Copy the binary and the agent config:
 

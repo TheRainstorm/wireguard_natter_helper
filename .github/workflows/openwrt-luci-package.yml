@@ -1,13 +1,26 @@
-name: Build OpenWrt LuCI package
+name: Build OpenWrt packages
 
 on:
   workflow_dispatch:
   push:
+    branches:
+      - master
+      - main
+    tags:
+      - "v*"
     paths:
+      - "cmd/**"
+      - "internal/**"
+      - "go.mod"
+      - "openwrt/wgnh/**"
       - "openwrt/luci-app-wgnh/**"
       - ".github/workflows/openwrt-luci-package.yml"
   pull_request:
     paths:
+      - "cmd/**"
+      - "internal/**"
+      - "go.mod"
+      - "openwrt/wgnh/**"
       - "openwrt/luci-app-wgnh/**"
       - ".github/workflows/openwrt-luci-package.yml"
 
@@ -36,11 +49,38 @@ jobs:
         env:
           ARCH: ${{ matrix.sdk_arch }}-${{ env.OPENWRT_VERSION }}
           FEEDNAME: wgnh
-          PACKAGES: luci-app-wgnh
+          PACKAGES: wgnh luci-app-wgnh
           V: s
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: luci-app-wgnh-${{ matrix.arch }}-${{ env.OPENWRT_VERSION }}
-          path: bin/packages/**/luci-app-wgnh*.ipk
+          name: openwrt-wgnh-${{ matrix.arch }}-${{ env.OPENWRT_VERSION }}
+          path: |
+            bin/packages/**/wgnh*.ipk
+            bin/packages/**/luci-app-wgnh*.ipk
+
+  release:
+    name: Publish release assets
+    needs: build
+    runs-on: ubuntu-24.04
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
+      - name: Flatten artifacts
+        run: |
+          mkdir -p release
+          find release-assets -name '*.ipk' -exec cp {} release/ \;
+          ls -la release
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*.ipk

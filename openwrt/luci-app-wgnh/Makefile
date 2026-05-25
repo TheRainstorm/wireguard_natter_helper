@@ -7,7 +7,7 @@ PKG_MAINTAINER:=wgnh maintainers
 PKG_LICENSE:=MIT
 
 LUCI_TITLE:=LuCI support for WireGuard Natter Helper
-LUCI_DEPENDS:=+luci-base +luci-compat
+LUCI_DEPENDS:=+luci-base +luci-compat +wgnh
 LUCI_PKGARCH:=all
 
 include $(TOPDIR)/feeds/luci/luci.mk

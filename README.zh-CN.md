@@ -64,19 +64,21 @@ go build -o wgnh ./cmd/wgnh
 
 ### OpenWrt
 
-如果需要 LuCI 管理界面，安装 GitHub Actions 编译出来的包：
+OpenWrt 上安装 GitHub Release 或 Actions artifacts 里的两个包：
 
 ```sh
-opkg install ./luci-app-wgnh_*.ipk
+opkg install ./wgnh_*.ipk ./luci-app-wgnh_*.ipk
 /etc/init.d/uhttpd restart
 ```
 
-打开 LuCI，进入 `VPN` -> `WG Natter`。LuCI 页面会在路由器上执行 `/usr/bin/wgnh daemon nodes|bindings|events` 来读取 daemon 状态，所以 `wgnh` 二进制仍然需要单独安装。daemon 地址和 admin token 在 `WG Natter` -> `Settings` 里配置。
+`wgnh` 包会把二进制安装到 `/usr/bin/wgnh`。`luci-app-wgnh` 包负责安装 LuCI 页面、UCI 配置和 OpenWrt 服务脚本。打开 LuCI，进入 `VPN` -> `WG Natter`，daemon 地址和 admin token 在 `WG Natter` -> `Settings` 里配置。
 
-LuCI 包源码在 `openwrt/luci-app-wgnh`。GitHub Actions 会自动编译：
+包源码在 `openwrt/wgnh` 和 `openwrt/luci-app-wgnh`。GitHub Actions 会自动编译：
 
 - `amd64`：OpenWrt `x86/64`
 - `arm64`：OpenWrt `armsr/armv8`
+
+推送 `v0.1.0` 这类 tag 时，CI 会把编译好的 ipk 发布到 GitHub Releases。普通非 tag workflow run 会把 ipk 保存在 Actions artifacts。
 
 先复制二进制和 agent 配置：
 
