@@ -1,0 +1,30 @@
+#!/bin/sh /etc/rc.common
+
+START=95
+STOP=10
+USE_PROCD=1
+
+start_service() {
+	config_load wgnh
+	local enabled binary config_path
+	config_get_bool enabled agent enabled 0
+	[ "$enabled" = "1" ] || return 0
+	config_get binary agent binary /usr/bin/wgnh
+	config_get config_path agent config_path /etc/wgnh/agent.json
+
+	procd_open_instance
+	procd_set_param command "$binary" agent --config "$config_path"
+	procd_set_param respawn 3600 5 5
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}
+
+reload_service() {
+	stop
+	start
+}
+
+service_triggers() {
+	procd_add_reload_trigger wgnh
+}

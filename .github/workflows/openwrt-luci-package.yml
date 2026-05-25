@@ -1,0 +1,46 @@
+name: Build OpenWrt LuCI package
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "openwrt/luci-app-wgnh/**"
+      - ".github/workflows/openwrt-luci-package.yml"
+  pull_request:
+    paths:
+      - "openwrt/luci-app-wgnh/**"
+      - ".github/workflows/openwrt-luci-package.yml"
+
+env:
+  OPENWRT_VERSION: "24.10.6"
+
+jobs:
+  build:
+    name: ${{ matrix.arch }} ipk
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            sdk_arch: x86_64
+          - arch: arm64
+            sdk_arch: aarch64_generic
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build package with OpenWrt SDK
+        uses: openwrt/gh-action-sdk@main
+        env:
+          ARCH: ${{ matrix.sdk_arch }}-${{ env.OPENWRT_VERSION }}
+          FEEDNAME: wgnh
+          PACKAGES: luci-app-wgnh
+          V: s
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: luci-app-wgnh-${{ matrix.arch }}-${{ env.OPENWRT_VERSION }}
+          path: bin/packages/**/luci-app-wgnh*.ipk

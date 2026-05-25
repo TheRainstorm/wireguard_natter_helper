@@ -1,0 +1,335 @@
+<%+header%>
+
+<style>
+  .wgnh-page {
+    display: grid;
+    gap: 16px;
+  }
+  .wgnh-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 16px;
+    border: 1px solid #d9e0e7;
+    border-radius: 8px;
+    background: #fff;
+  }
+  .wgnh-title {
+    margin: 0;
+    font-size: 20px;
+  }
+  .wgnh-sub {
+    color: #667085;
+    margin-top: 4px;
+  }
+  .wgnh-stats {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(120px, 1fr));
+    gap: 12px;
+  }
+  .wgnh-stat,
+  .wgnh-panel {
+    border: 1px solid #d9e0e7;
+    border-radius: 8px;
+    background: #fff;
+    overflow: hidden;
+  }
+  .wgnh-stat {
+    padding: 14px;
+  }
+  .wgnh-label {
+    color: #667085;
+    font-size: 12px;
+  }
+  .wgnh-value {
+    margin-top: 4px;
+    font-size: 26px;
+    font-weight: 700;
+  }
+  .wgnh-panel-head {
+    padding: 12px 14px;
+    border-bottom: 1px solid #d9e0e7;
+    background: #eef3f8;
+    font-weight: 700;
+  }
+  .wgnh-scroll {
+    overflow-x: auto;
+  }
+  .wgnh-table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  .wgnh-table th,
+  .wgnh-table td {
+    padding: 10px 12px;
+    border-bottom: 1px solid #e5eaf0;
+    text-align: left;
+    white-space: nowrap;
+    vertical-align: top;
+  }
+  .wgnh-table th {
+    color: #667085;
+    font-size: 12px;
+    background: #fbfcfd;
+  }
+  .wgnh-wrap {
+    white-space: normal;
+    min-width: 220px;
+  }
+  .wgnh-code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    background: #f2f4f7;
+    border: 1px solid #e4e7ec;
+    border-radius: 6px;
+    padding: 2px 5px;
+  }
+  .wgnh-badge {
+    display: inline-flex;
+    min-height: 22px;
+    align-items: center;
+    padding: 2px 8px;
+    border: 1px solid #d9e0e7;
+    border-radius: 999px;
+    color: #667085;
+    background: #fff;
+  }
+  .wgnh-online {
+    color: #027a48;
+    border-color: #abefc6;
+    background: #ecfdf3;
+  }
+  .wgnh-offline,
+  .wgnh-error {
+    color: #b42318;
+  }
+  .wgnh-empty {
+    padding: 18px;
+    color: #667085;
+  }
+  .wgnh-toast {
+    position: fixed;
+    right: 18px;
+    bottom: 18px;
+    display: none;
+    max-width: 460px;
+    padding: 12px 14px;
+    border-radius: 8px;
+    color: #fff;
+    background: #111827;
+    z-index: 999;
+  }
+  @media (max-width: 900px) {
+    .wgnh-head {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+    .wgnh-stats {
+      grid-template-columns: repeat(2, minmax(120px, 1fr));
+    }
+  }
+</style>
+
+<div class="wgnh-page">
+  <div class="wgnh-head">
+    <div>
+      <h2 class="wgnh-title"><%:WireGuard Natter Helper%></h2>
+      <div id="wgnh-subtitle" class="wgnh-sub"><%:Loading daemon status...%></div>
+    </div>
+    <button class="cbi-button cbi-button-reload" id="wgnh-refresh"><%:Refresh%></button>
+  </div>
+
+  <div class="wgnh-stats">
+    <div class="wgnh-stat"><div class="wgnh-label"><%:Nodes%></div><div id="wgnh-stat-nodes" class="wgnh-value">-</div></div>
+    <div class="wgnh-stat"><div class="wgnh-label"><%:Online nodes%></div><div id="wgnh-stat-online" class="wgnh-value">-</div></div>
+    <div class="wgnh-stat"><div class="wgnh-label"><%:Bindings%></div><div id="wgnh-stat-bindings" class="wgnh-value">-</div></div>
+    <div class="wgnh-stat"><div class="wgnh-label"><%:Endpoints%></div><div id="wgnh-stat-endpoints" class="wgnh-value">-</div></div>
+    <div class="wgnh-stat"><div class="wgnh-label"><%:Error events%></div><div id="wgnh-stat-errors" class="wgnh-value">-</div></div>
+  </div>
+
+  <div class="wgnh-panel">
+    <div class="wgnh-panel-head"><%:Nodes%></div>
+    <div class="wgnh-scroll">
+      <table class="wgnh-table">
+        <thead><tr><th><%:Node%></th><th><%:Role%></th><th><%:Status%></th><th><%:Platform%></th><th><%:Version%></th><th><%:Last seen%></th></tr></thead>
+        <tbody id="wgnh-nodes"><tr><td colspan="6" class="wgnh-empty"><%:No data loaded%></td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="wgnh-panel">
+    <div class="wgnh-panel-head"><%:WireGuard bindings%></div>
+    <div class="wgnh-scroll">
+      <table class="wgnh-table">
+        <thead><tr><th><%:Binding%></th><th><%:Server%></th><th><%:Client%></th><th><%:Endpoint%></th><th><%:Config%></th><th><%:Action%></th></tr></thead>
+        <tbody id="wgnh-bindings"><tr><td colspan="6" class="wgnh-empty"><%:No data loaded%></td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="wgnh-panel">
+    <div class="wgnh-panel-head"><%:Recent events%></div>
+    <div class="wgnh-scroll">
+      <table class="wgnh-table">
+        <thead><tr><th><%:Time%></th><th><%:Severity%></th><th><%:Type%></th><th><%:Node%></th><th><%:Binding%></th><th><%:Message%></th><th><%:Payload%></th></tr></thead>
+        <tbody id="wgnh-events"><tr><td colspan="7" class="wgnh-empty"><%:No data loaded%></td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="wgnh-toast" id="wgnh-toast"></div>
+
+<script type="text/javascript">
+(function() {
+  'use strict';
+
+  var summaryURL = '<%=url("admin/vpn/wgnh/api/summary")%>';
+  var runURL = '<%=url("admin/vpn/wgnh/api/run_natter")%>';
+  var refreshTimer = null;
+
+  document.getElementById('wgnh-refresh').addEventListener('click', loadSummary);
+  loadSummary();
+
+  async function loadSummary() {
+    clearTimer();
+    try {
+      var res = await fetch(summaryURL, { credentials: 'same-origin' });
+      var json = await res.json();
+      if (!json.ok) throw new Error(json.error || 'request failed');
+      render(json.data);
+      refreshTimer = setTimeout(loadSummary, 15000);
+    } catch (err) {
+      document.getElementById('wgnh-subtitle').textContent = '<%:Failed to load daemon status:%> ' + err.message;
+      toast('<%:Failed:%> ' + err.message);
+    }
+  }
+
+  async function runNatter(serverNodeID, serverInterface, button) {
+    button.disabled = true;
+    try {
+      var body = new URLSearchParams();
+      body.set('server_node_id', serverNodeID);
+      body.set('server_interface', serverInterface);
+      var res = await fetch(runURL, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body.toString()
+      });
+      var json = await res.json();
+      if (!json.ok) throw new Error(json.error || 'request failed');
+      var id = json.command && json.command.command_id ? json.command.command_id : 'queued';
+      toast('<%:natter.run queued:%> ' + id);
+      loadSummary();
+    } catch (err) {
+      toast('<%:Failed:%> ' + err.message);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  function render(data) {
+    document.getElementById('wgnh-subtitle').innerHTML = 'daemon <span class="wgnh-code">' + esc(data.daemon_addr) + '</span> · ' + esc(data.generated_at) + ' · <%:Auto refresh 15s%>';
+    document.getElementById('wgnh-stat-nodes').textContent = data.stats.nodes;
+    document.getElementById('wgnh-stat-online').textContent = data.stats.online;
+    document.getElementById('wgnh-stat-bindings').textContent = data.stats.bindings;
+    document.getElementById('wgnh-stat-endpoints').textContent = data.stats.with_endpoint;
+    document.getElementById('wgnh-stat-errors').textContent = data.stats.errors;
+    renderNodes(data.nodes || []);
+    renderBindings(data.bindings || []);
+    renderEvents(data.events || []);
+  }
+
+  function renderNodes(nodes) {
+    var body = document.getElementById('wgnh-nodes');
+    if (!nodes.length) {
+      body.innerHTML = '<tr><td colspan="6" class="wgnh-empty"><%:No nodes%></td></tr>';
+      return;
+    }
+    body.innerHTML = nodes.map(function(node) {
+      return '<tr>'
+        + '<td><span class="wgnh-code">' + esc(node.id) + '</span></td>'
+        + '<td>' + esc(node.role) + '</td>'
+        + '<td><span class="wgnh-badge wgnh-' + attr(node.status) + '">' + esc(node.status) + '</span></td>'
+        + '<td>' + esc(node.platform) + '</td>'
+        + '<td>' + esc(node.agent_version) + '</td>'
+        + '<td>' + esc(node.last_seen_at) + '</td>'
+        + '</tr>';
+    }).join('');
+  }
+
+  function renderBindings(bindings) {
+    var body = document.getElementById('wgnh-bindings');
+    if (!bindings.length) {
+      body.innerHTML = '<tr><td colspan="6" class="wgnh-empty"><%:No bindings%></td></tr>';
+      return;
+    }
+    body.innerHTML = bindings.map(function(binding, index) {
+      var endpoint = binding.endpoint_host
+        ? '<span class="wgnh-code">' + esc(binding.endpoint_host + ':' + binding.endpoint_port) + '</span>'
+        : '<span class="text-muted"><%:Not published%></span>';
+      return '<tr>'
+        + '<td><span class="wgnh-code">' + esc(binding.id) + '</span></td>'
+        + '<td><span class="wgnh-code">' + esc(binding.server_node_id) + '</span> / <span class="wgnh-code">' + esc(binding.server_interface) + '</span></td>'
+        + '<td><span class="wgnh-code">' + esc(binding.client_node_id) + '</span> / <span class="wgnh-code">' + esc(binding.client_interface) + '</span></td>'
+        + '<td>' + endpoint + '</td>'
+        + '<td><span class="wgnh-badge">' + esc(binding.config_type) + '</span> ' + esc(binding.reload_method) + '</td>'
+        + '<td><button class="cbi-button cbi-button-apply" data-binding="' + index + '"><%:Run Natter%></button></td>'
+        + '</tr>';
+    }).join('');
+    body.querySelectorAll('button[data-binding]').forEach(function(button) {
+      var binding = bindings[Number(button.dataset.binding)];
+      button.addEventListener('click', function() {
+        runNatter(binding.server_node_id, binding.server_interface, button);
+      });
+    });
+  }
+
+  function renderEvents(events) {
+    var body = document.getElementById('wgnh-events');
+    if (!events.length) {
+      body.innerHTML = '<tr><td colspan="7" class="wgnh-empty"><%:No events%></td></tr>';
+      return;
+    }
+    body.innerHTML = events.map(function(event) {
+      return '<tr>'
+        + '<td>' + esc(event.created_at) + '</td>'
+        + '<td><span class="wgnh-' + attr(event.severity) + '">' + esc(event.severity) + '</span></td>'
+        + '<td><span class="wgnh-code">' + esc(event.type) + '</span></td>'
+        + '<td>' + esc(event.node_id) + '</td>'
+        + '<td>' + esc(event.binding_id) + '</td>'
+        + '<td class="wgnh-wrap">' + esc(event.message) + '</td>'
+        + '<td class="wgnh-wrap"><span class="wgnh-code">' + esc(JSON.stringify(event.payload || {})) + '</span></td>'
+        + '</tr>';
+    }).join('');
+  }
+
+  function clearTimer() {
+    if (refreshTimer) {
+      clearTimeout(refreshTimer);
+      refreshTimer = null;
+    }
+  }
+
+  function toast(message) {
+    var el = document.getElementById('wgnh-toast');
+    el.textContent = message;
+    el.style.display = 'block';
+    clearTimeout(window.__wgnhToast);
+    window.__wgnhToast = setTimeout(function() { el.style.display = 'none'; }, 5000);
+  }
+
+  function esc(value) {
+    return String(value || '').replace(/[&<>"']/g, function(ch) {
+      return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch];
+    });
+  }
+
+  function attr(value) {
+    return esc(value).replace(/[^a-zA-Z0-9_-]/g, '');
+  }
+})();
+</script>
+
+<%+footer%>

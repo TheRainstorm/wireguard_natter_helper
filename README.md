@@ -64,6 +64,20 @@ Install only the service you need on each machine. For example, the VPS usually 
 
 ### OpenWrt
 
+For a LuCI dashboard, install the package built by GitHub Actions:
+
+```sh
+opkg install ./luci-app-wgnh_*.ipk
+/etc/init.d/uhttpd restart
+```
+
+Open LuCI and go to `VPN` -> `WG Natter`. The LuCI page reads daemon status by executing `/usr/bin/wgnh daemon nodes|bindings|events` on the router, so the `wgnh` binary still needs to be installed separately. Configure daemon address and admin token in `WG Natter` -> `Settings`.
+
+The package source lives in `openwrt/luci-app-wgnh`. GitHub Actions builds ipk artifacts for:
+
+- `amd64`: OpenWrt `x86/64`
+- `arm64`: OpenWrt `armsr/armv8`
+
 Copy the binary and the agent config:
 
 ```sh
