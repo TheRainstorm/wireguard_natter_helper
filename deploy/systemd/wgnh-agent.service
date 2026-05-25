@@ -1,0 +1,14 @@
+[Unit]
+Description=WireGuard Natter Helper agent
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/wgnh/agent.env
+ExecStart=/usr/local/bin/wgnh agent --config=${WGNH_AGENT_CONFIG}
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

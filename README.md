@@ -53,6 +53,111 @@ go build -o wgnh ./cmd/wgnh
 
 Copy the binary to the VPS, the NAT-side server, client nodes, and any machine that will run the Web UI.
 
+## Autostart services
+
+The repository includes ready-to-install service templates:
+
+- `deploy/openwrt/*.init` for OpenWrt `procd`
+- `deploy/systemd/*.service` and `deploy/systemd/*.env` for common Linux distributions using systemd
+
+Install only the service you need on each machine. For example, the VPS usually runs `wgnh-daemon`, the NAT-side server and client nodes usually run `wgnh-agent`, and an admin machine can run `wgnh-web`.
+
+### OpenWrt
+
+Copy the binary and the agent config:
+
+```sh
+install -m 0755 ./wgnh /usr/bin/wgnh
+mkdir -p /etc/wgnh
+cp ./examples/server-agent-natter.json /etc/wgnh/agent.json
+```
+
+Install and enable the agent service:
+
+```sh
+cp deploy/openwrt/wgnh-agent.init /etc/init.d/wgnh-agent
+chmod +x /etc/init.d/wgnh-agent
+/etc/init.d/wgnh-agent enable
+/etc/init.d/wgnh-agent start
+```
+
+Check logs:
+
+```sh
+logread -f | grep wgnh
+```
+
+If this OpenWrt machine should run the Web UI:
+
+```sh
+cp deploy/openwrt/wgnh-web.init /etc/init.d/wgnh-web
+chmod +x /etc/init.d/wgnh-web
+/etc/init.d/wgnh-web enable
+/etc/init.d/wgnh-web start
+```
+
+If this OpenWrt machine should run the daemon, create `/etc/wgnh/state.json` first, put the admin token in `/etc/wgnh/admin-token`, then enable the daemon service:
+
+```sh
+printf '%s\n' 'change-this-to-a-long-random-string' > /etc/wgnh/admin-token
+chmod 600 /etc/wgnh/admin-token
+
+cp deploy/openwrt/wgnh-daemon.init /etc/init.d/wgnh-daemon
+chmod +x /etc/init.d/wgnh-daemon
+/etc/init.d/wgnh-daemon enable
+/etc/init.d/wgnh-daemon start
+```
+
+Edit the variables at the top of the init script if your binary, config, state path, listen address, or cooldown differs.
+
+### Linux systemd
+
+Copy the binary:
+
+```sh
+install -m 0755 ./wgnh /usr/local/bin/wgnh
+mkdir -p /etc/wgnh
+```
+
+Install and enable the agent service:
+
+```sh
+cp deploy/systemd/wgnh-agent.service /etc/systemd/system/wgnh-agent.service
+cp deploy/systemd/wgnh-agent.env /etc/wgnh/agent.env
+cp ./examples/client-agent.json /etc/wgnh/agent.json
+
+systemctl daemon-reload
+systemctl enable --now wgnh-agent
+```
+
+Install and enable the daemon service:
+
+```sh
+cp deploy/systemd/wgnh-daemon.service /etc/systemd/system/wgnh-daemon.service
+cp deploy/systemd/wgnh-daemon.env /etc/wgnh/daemon.env
+
+systemctl daemon-reload
+systemctl enable --now wgnh-daemon
+```
+
+Install and enable the Web UI service:
+
+```sh
+cp deploy/systemd/wgnh-web.service /etc/systemd/system/wgnh-web.service
+cp deploy/systemd/wgnh-web.env /etc/wgnh/web.env
+
+systemctl daemon-reload
+systemctl enable --now wgnh-web
+```
+
+Edit `/etc/wgnh/*.env` before starting if the defaults do not match your environment. Check logs with:
+
+```sh
+journalctl -u wgnh-agent -f
+journalctl -u wgnh-daemon -f
+journalctl -u wgnh-web -f
+```
+
 ## Docker
 
 Build the image:

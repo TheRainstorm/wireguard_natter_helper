@@ -53,6 +53,111 @@ go build -o wgnh ./cmd/wgnh
 
 把生成的 `wgnh` 放到 VPS、NAT 后的 WireGuard server、客户端，以及需要运行 Web UI 的机器上。
 
+## 自启动服务
+
+仓库里已经提供可直接安装的服务模板：
+
+- `deploy/openwrt/*.init`：OpenWrt `procd` 自启动脚本
+- `deploy/systemd/*.service` 和 `deploy/systemd/*.env`：普通 Linux systemd 服务
+
+每台机器只安装自己需要的服务。一般来说，VPS 跑 `wgnh-daemon`，NAT 后的 server 和客户端跑 `wgnh-agent`，管理机器可以跑 `wgnh-web`。
+
+### OpenWrt
+
+先复制二进制和 agent 配置：
+
+```sh
+install -m 0755 ./wgnh /usr/bin/wgnh
+mkdir -p /etc/wgnh
+cp ./examples/server-agent-natter.json /etc/wgnh/agent.json
+```
+
+安装并启用 agent 服务：
+
+```sh
+cp deploy/openwrt/wgnh-agent.init /etc/init.d/wgnh-agent
+chmod +x /etc/init.d/wgnh-agent
+/etc/init.d/wgnh-agent enable
+/etc/init.d/wgnh-agent start
+```
+
+查看日志：
+
+```sh
+logread -f | grep wgnh
+```
+
+如果这台 OpenWrt 需要跑 Web UI：
+
+```sh
+cp deploy/openwrt/wgnh-web.init /etc/init.d/wgnh-web
+chmod +x /etc/init.d/wgnh-web
+/etc/init.d/wgnh-web enable
+/etc/init.d/wgnh-web start
+```
+
+如果这台 OpenWrt 需要跑 daemon，先创建 `/etc/wgnh/state.json`，把 admin token 放到 `/etc/wgnh/admin-token`，再启用 daemon 服务：
+
+```sh
+printf '%s\n' 'change-this-to-a-long-random-string' > /etc/wgnh/admin-token
+chmod 600 /etc/wgnh/admin-token
+
+cp deploy/openwrt/wgnh-daemon.init /etc/init.d/wgnh-daemon
+chmod +x /etc/init.d/wgnh-daemon
+/etc/init.d/wgnh-daemon enable
+/etc/init.d/wgnh-daemon start
+```
+
+如果你的二进制、配置文件、state 路径、监听地址或 cooldown 不同，直接修改 init 脚本顶部变量。
+
+### 普通 Linux systemd
+
+复制二进制：
+
+```sh
+install -m 0755 ./wgnh /usr/local/bin/wgnh
+mkdir -p /etc/wgnh
+```
+
+安装并启用 agent 服务：
+
+```sh
+cp deploy/systemd/wgnh-agent.service /etc/systemd/system/wgnh-agent.service
+cp deploy/systemd/wgnh-agent.env /etc/wgnh/agent.env
+cp ./examples/client-agent.json /etc/wgnh/agent.json
+
+systemctl daemon-reload
+systemctl enable --now wgnh-agent
+```
+
+安装并启用 daemon 服务：
+
+```sh
+cp deploy/systemd/wgnh-daemon.service /etc/systemd/system/wgnh-daemon.service
+cp deploy/systemd/wgnh-daemon.env /etc/wgnh/daemon.env
+
+systemctl daemon-reload
+systemctl enable --now wgnh-daemon
+```
+
+安装并启用 Web UI 服务：
+
+```sh
+cp deploy/systemd/wgnh-web.service /etc/systemd/system/wgnh-web.service
+cp deploy/systemd/wgnh-web.env /etc/wgnh/web.env
+
+systemctl daemon-reload
+systemctl enable --now wgnh-web
+```
+
+如果默认值不符合你的环境，启动前先修改 `/etc/wgnh/*.env`。查看日志：
+
+```sh
+journalctl -u wgnh-agent -f
+journalctl -u wgnh-daemon -f
+journalctl -u wgnh-web -f
+```
+
 ## Docker
 
 构建镜像：

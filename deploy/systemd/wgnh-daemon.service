@@ -1,0 +1,14 @@
+[Unit]
+Description=WireGuard Natter Helper daemon
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/wgnh/daemon.env
+ExecStart=/usr/local/bin/wgnh daemon serve --state=${WGNH_STATE} --addr=${WGNH_ADDR} --admin-token=${WGNH_ADMIN_TOKEN} --natter-cooldown=${WGNH_NATTER_COOLDOWN}
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
