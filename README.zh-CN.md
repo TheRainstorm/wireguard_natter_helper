@@ -73,12 +73,15 @@ opkg install ./wgnh_*.ipk ./luci-app-wgnh_*.ipk
 
 `wgnh` 包会把二进制安装到 `/usr/bin/wgnh`。`luci-app-wgnh` 包负责安装 LuCI 页面、UCI 配置和 OpenWrt 服务脚本。打开 LuCI，进入 `VPN` -> `WG Natter`，daemon 地址和 admin token 在 `WG Natter` -> `Settings` 里配置。
 
-包源码在 `openwrt/wgnh` 和 `openwrt/luci-app-wgnh`。GitHub Actions 会自动编译：
+包源码在 `openwrt/wgnh` 和 `openwrt/luci-app-wgnh`。GitHub Actions 会为 OpenWrt 24.10.5 自动编译：
 
 - `amd64`：OpenWrt `x86/64`
-- `arm64`：OpenWrt `armsr/armv8`
+- `arm64-filogic`：OpenWrt `mediatek/filogic`，包架构是 `aarch64_cortex-a53`，适合 Cudy TR3000 这类设备
+- `arm64-generic`：OpenWrt `armsr/armv8`，包架构是 `aarch64_generic`
 
 推送 `v0.1.0` 这类 tag 时，CI 会把编译好的 ipk 发布到 GitHub Releases。普通非 tag workflow run 会把 ipk 保存在 Actions artifacts。
+
+可以用 `cat /etc/os-release` 查看路由器的 `OPENWRT_ARCH`。必须安装匹配架构的 ipk，否则 `opkg` 会提示 incompatible with the architectures configured。
 
 先复制二进制和 agent 配置：
 

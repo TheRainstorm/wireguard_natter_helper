@@ -25,7 +25,7 @@ on:
       - ".github/workflows/openwrt-luci-package.yml"
 
 env:
-  OPENWRT_VERSION: "24.10.6"
+  OPENWRT_VERSION: "24.10.5"
 
 jobs:
   build:
@@ -37,7 +37,9 @@ jobs:
         include:
           - arch: amd64
             sdk_arch: x86_64
-          - arch: arm64
+          - arch: arm64-filogic
+            sdk_arch: aarch64_cortex-a53
+          - arch: arm64-generic
             sdk_arch: aarch64_generic
 
     steps:

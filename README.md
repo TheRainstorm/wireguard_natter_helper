@@ -73,12 +73,15 @@ opkg install ./wgnh_*.ipk ./luci-app-wgnh_*.ipk
 
 The `wgnh` package installs the binary at `/usr/bin/wgnh`. The `luci-app-wgnh` package installs the LuCI page, UCI config, and OpenWrt services. Open LuCI and go to `VPN` -> `WG Natter`. Configure daemon address and admin token in `WG Natter` -> `Settings`.
 
-The package sources live in `openwrt/wgnh` and `openwrt/luci-app-wgnh`. GitHub Actions builds ipk artifacts for:
+The package sources live in `openwrt/wgnh` and `openwrt/luci-app-wgnh`. GitHub Actions builds ipk artifacts for OpenWrt 24.10.5:
 
 - `amd64`: OpenWrt `x86/64`
-- `arm64`: OpenWrt `armsr/armv8`
+- `arm64-filogic`: OpenWrt `mediatek/filogic`, package arch `aarch64_cortex-a53`, for devices such as Cudy TR3000
+- `arm64-generic`: OpenWrt `armsr/armv8`, package arch `aarch64_generic`
 
 Tagged releases such as `v0.1.0` publish the built ipk files to GitHub Releases. Non-tag workflow runs keep the ipk files as Actions artifacts.
+
+Check your router with `cat /etc/os-release`. Install the package whose architecture matches `OPENWRT_ARCH`; `opkg` rejects packages built for a different OpenWrt architecture.
 
 Copy the binary and the agent config:
 
