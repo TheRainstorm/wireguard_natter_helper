@@ -53,6 +53,12 @@
     background: #eef3f8;
     font-weight: 700;
   }
+  .wgnh-help {
+    padding: 12px 14px;
+    color: #667085;
+    border-bottom: 1px solid #d9e0e7;
+    background: #fbfcfd;
+  }
   .wgnh-scroll {
     overflow-x: auto;
   }
@@ -107,6 +113,17 @@
     padding: 18px;
     color: #667085;
   }
+  .wgnh-log {
+    margin: 0;
+    padding: 12px 14px;
+    min-height: 180px;
+    max-height: 420px;
+    overflow: auto;
+    color: #d1d5db;
+    background: #111827;
+    font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    white-space: pre-wrap;
+  }
   .wgnh-toast {
     position: fixed;
     right: 18px;
@@ -134,7 +151,7 @@
   <div class="wgnh-head">
     <div>
       <h2 class="wgnh-title"><%:WireGuard Natter Helper%></h2>
-      <div id="wgnh-subtitle" class="wgnh-sub"><%:Loading daemon status...%></div>
+      <div id="wgnh-subtitle" class="wgnh-sub"><%:Loading remote daemon and local service status...%></div>
     </div>
     <button class="cbi-button cbi-button-reload" id="wgnh-refresh"><%:Refresh%></button>
   </div>
@@ -148,7 +165,19 @@
   </div>
 
   <div class="wgnh-panel">
-    <div class="wgnh-panel-head"><%:Nodes%></div>
+    <div class="wgnh-panel-head"><%:Local OpenWrt services%></div>
+    <div class="wgnh-help"><%:This section shows services running on this router. It is useful when this router is configured as a wgnh agent.%></div>
+    <div class="wgnh-scroll">
+      <table class="wgnh-table">
+        <thead><tr><th><%:Service%></th><th><%:Enabled%></th><th><%:Runtime status%></th></tr></thead>
+        <tbody id="wgnh-local-services"><tr><td colspan="3" class="wgnh-empty"><%:No data loaded%></td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="wgnh-panel">
+    <div class="wgnh-panel-head"><%:Remote daemon nodes%></div>
+    <div class="wgnh-help"><%:This section comes from the configured daemon address. It shows all nodes known by the daemon, not only this router.%></div>
     <div class="wgnh-scroll">
       <table class="wgnh-table">
         <thead><tr><th><%:Node%></th><th><%:Role%></th><th><%:Status%></th><th><%:Platform%></th><th><%:Version%></th><th><%:Last seen%></th></tr></thead>
@@ -158,7 +187,7 @@
   </div>
 
   <div class="wgnh-panel">
-    <div class="wgnh-panel-head"><%:WireGuard bindings%></div>
+    <div class="wgnh-panel-head"><%:Remote daemon WireGuard bindings%></div>
     <div class="wgnh-scroll">
       <table class="wgnh-table">
         <thead><tr><th><%:Binding%></th><th><%:Server%></th><th><%:Client%></th><th><%:Endpoint%></th><th><%:Config%></th><th><%:Action%></th></tr></thead>
@@ -168,13 +197,19 @@
   </div>
 
   <div class="wgnh-panel">
-    <div class="wgnh-panel-head"><%:Recent events%></div>
+    <div class="wgnh-panel-head"><%:Remote daemon recent events%></div>
     <div class="wgnh-scroll">
       <table class="wgnh-table">
         <thead><tr><th><%:Time%></th><th><%:Severity%></th><th><%:Type%></th><th><%:Node%></th><th><%:Binding%></th><th><%:Message%></th><th><%:Payload%></th></tr></thead>
         <tbody id="wgnh-events"><tr><td colspan="7" class="wgnh-empty"><%:No data loaded%></td></tr></tbody>
       </table>
     </div>
+  </div>
+
+  <div class="wgnh-panel">
+    <div class="wgnh-panel-head"><%:Local wgnh logs%></div>
+    <div class="wgnh-help"><%:Recent logread lines matching wgnh on this router. Agent runtime errors and reconnect messages are shown here.%></div>
+    <pre id="wgnh-local-logs" class="wgnh-log"><%:No data loaded%></pre>
   </div>
 </div>
 
@@ -185,6 +220,7 @@
   'use strict';
 
   var summaryURL = '<%=url("admin/vpn/wgnh/api/summary")%>';
+  var localURL = '<%=url("admin/vpn/wgnh/api/local")%>';
   var runURL = '<%=url("admin/vpn/wgnh/api/run_natter")%>';
   var refreshTimer = null;
 
@@ -193,16 +229,28 @@
 
   async function loadSummary() {
     clearTimer();
+    var errors = [];
+    try {
+      var localRes = await fetch(localURL, { credentials: 'same-origin' });
+      var localJson = await localRes.json();
+      if (!localJson.ok) throw new Error(localJson.error || 'local request failed');
+      renderLocal(localJson.data);
+    } catch (err) {
+      errors.push('<%:local status%>: ' + err.message);
+    }
     try {
       var res = await fetch(summaryURL, { credentials: 'same-origin' });
       var json = await res.json();
       if (!json.ok) throw new Error(json.error || 'request failed');
       render(json.data);
-      refreshTimer = setTimeout(loadSummary, 15000);
     } catch (err) {
-      document.getElementById('wgnh-subtitle').textContent = '<%:Failed to load daemon status:%> ' + err.message;
-      toast('<%:Failed:%> ' + err.message);
+      errors.push('<%:remote daemon%>: ' + err.message);
     }
+    if (errors.length) {
+      document.getElementById('wgnh-subtitle').textContent = '<%:Status load issue:%> ' + errors.join('; ');
+      toast('<%:Failed:%> ' + errors.join('; '));
+    }
+    refreshTimer = setTimeout(loadSummary, 15000);
   }
 
   async function runNatter(serverNodeID, serverInterface, button) {
@@ -239,6 +287,21 @@
     renderNodes(data.nodes || []);
     renderBindings(data.bindings || []);
     renderEvents(data.events || []);
+  }
+
+  function renderLocal(data) {
+    var services = [
+      { name: 'wgnh-agent', value: data.agent || {} },
+      { name: 'wgnh-daemon', value: data.daemon || {} }
+    ];
+    document.getElementById('wgnh-local-services').innerHTML = services.map(function(service) {
+      return '<tr>'
+        + '<td><span class="wgnh-code">' + esc(service.name) + '</span></td>'
+        + '<td><span class="wgnh-badge">' + (service.value.enabled ? '<%:enabled%>' : '<%:disabled%>') + '</span></td>'
+        + '<td class="wgnh-wrap">' + esc(service.value.status || '') + '</td>'
+        + '</tr>';
+    }).join('');
+    document.getElementById('wgnh-local-logs').textContent = data.logs || '<%:No wgnh log lines found%>';
   }
 
   function renderNodes(nodes) {

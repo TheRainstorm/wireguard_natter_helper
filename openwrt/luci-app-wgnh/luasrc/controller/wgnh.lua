@@ -14,22 +14,34 @@ local function daemon_config()
 	local binary = uci:get("wgnh", "daemon", "binary") or "/usr/bin/wgnh"
 	local addr = uci:get("wgnh", "daemon", "connect_addr") or "127.0.0.1:3333"
 	local token = uci:get("wgnh", "daemon", "admin_token") or ""
+	local token_file = uci:get("wgnh", "daemon", "admin_token_file") or "/etc/wgnh/admin-token"
+	if token == "" and fs.access(token_file) then
+		token = (fs.readfile(token_file) or ""):match("^%s*(.-)%s*$") or ""
+	end
 	return binary, addr, token
 end
 
-local function read_command(command)
+local function command_output(command)
 	local fh = io.popen(command .. " 2>&1")
 	if not fh then
 		return nil, "failed to start command"
 	end
 	local raw = fh:read("*a") or ""
 	local ok, reason, code = fh:close()
+	if ok == nil then
+		return nil, string.format("command failed: %s %s: %s", tostring(reason), tostring(code), raw)
+	end
+	return raw, nil
+end
+
+local function read_command(command)
+	local raw, err = command_output(command)
+	if not raw then
+		return nil, err
+	end
 	local data = json.parse(raw)
 	if data then
 		return data, nil
-	end
-	if ok == nil then
-		return nil, string.format("command failed: %s %s: %s", tostring(reason), tostring(code), raw)
 	end
 	return nil, raw
 end
@@ -96,6 +108,7 @@ function index()
 	entry({"admin", "vpn", "wgnh", "status"}, template("wgnh/status"), _("Status"), 10).leaf = true
 	entry({"admin", "vpn", "wgnh", "settings"}, cbi("wgnh/settings"), _("Settings"), 20).leaf = true
 	entry({"admin", "vpn", "wgnh", "api", "summary"}, call("api_summary")).leaf = true
+	entry({"admin", "vpn", "wgnh", "api", "local"}, call("api_local")).leaf = true
 	entry({"admin", "vpn", "wgnh", "api", "run_natter"}, call("api_run_natter")).leaf = true
 end
 
@@ -130,6 +143,29 @@ function api_summary()
 			bindings = bindings,
 			events = events,
 			stats = build_stats(nodes, bindings, events)
+		}
+	})
+end
+
+function api_local()
+	local agent_status = command_output("/etc/init.d/wgnh-agent status")
+	local daemon_status = command_output("/etc/init.d/wgnh-daemon status")
+	local agent_enabled = command_output("/etc/init.d/wgnh-agent enabled")
+	local daemon_enabled = command_output("/etc/init.d/wgnh-daemon enabled")
+	local logs = command_output("logread 2>/dev/null | grep -i wgnh | tail -n 120")
+
+	write_json({
+		ok = true,
+		data = {
+			agent = {
+				enabled = agent_enabled ~= nil,
+				status = agent_status or "not running"
+			},
+			daemon = {
+				enabled = daemon_enabled ~= nil,
+				status = daemon_status or "not running"
+			},
+			logs = logs or ""
 		}
 	})
 end

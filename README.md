@@ -73,6 +73,8 @@ opkg install ./wgnh_*.ipk ./luci-app-wgnh_*.ipk
 
 The `wgnh` package installs the binary at `/usr/bin/wgnh`. The `luci-app-wgnh` package installs the LuCI page, UCI config, and OpenWrt services. Open LuCI and go to `VPN` -> `WG Natter`. Configure daemon address and admin token in `WG Natter` -> `Settings`.
 
+In `Settings`, set `Daemon address used by LuCI status` to your VPS daemon address, for example `ecs01.yfycloud.site:3333`. Set `Admin token used by LuCI status` to the same value passed to `wgnh daemon serve --admin-token`, or leave it empty and put the token in `/etc/wgnh/admin-token`. The Status page shows remote daemon nodes, bindings, and events, plus local OpenWrt `wgnh-agent` / `wgnh-daemon` service status and recent `logread` lines.
+
 The package sources live in `openwrt/wgnh` and `openwrt/luci-app-wgnh`. GitHub Actions builds ipk artifacts for OpenWrt 24.10.5:
 
 - `amd64`: OpenWrt `x86/64`

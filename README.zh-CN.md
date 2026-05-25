@@ -73,6 +73,8 @@ opkg install ./wgnh_*.ipk ./luci-app-wgnh_*.ipk
 
 `wgnh` 包会把二进制安装到 `/usr/bin/wgnh`。`luci-app-wgnh` 包负责安装 LuCI 页面、UCI 配置和 OpenWrt 服务脚本。打开 LuCI，进入 `VPN` -> `WG Natter`，daemon 地址和 admin token 在 `WG Natter` -> `Settings` 里配置。
 
+在 `Settings` 里，`Daemon address used by LuCI status` 填 VPS daemon 地址，例如 `ecs01.yfycloud.site:3333`。`Admin token used by LuCI status` 填启动 `wgnh daemon serve --admin-token` 时使用的 token；也可以留空，然后把 token 放到 `/etc/wgnh/admin-token`。`Status` 页面会显示远端 daemon 的节点、binding、事件，也会显示本机 OpenWrt 上 `wgnh-agent` / `wgnh-daemon` 的服务状态和最近 `logread` 日志。
+
 包源码在 `openwrt/wgnh` 和 `openwrt/luci-app-wgnh`。GitHub Actions 会为 OpenWrt 24.10.5 自动编译：
 
 - `amd64`：OpenWrt `x86/64`
