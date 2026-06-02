@@ -24,6 +24,7 @@ type Server struct {
 type dashboardData struct {
 	DaemonAddr  string          `json:"daemon_addr"`
 	GeneratedAt string          `json:"generated_at"`
+	Domains     []store.Domain  `json:"domains"`
 	Nodes       []store.Node    `json:"nodes"`
 	Bindings    []store.Binding `json:"bindings"`
 	Events      []store.Event   `json:"events"`
@@ -33,6 +34,8 @@ type dashboardData struct {
 type stats struct {
 	Nodes        int `json:"nodes"`
 	Online       int `json:"online"`
+	Pending      int `json:"pending"`
+	Domains      int `json:"domains"`
 	Bindings     int `json:"bindings"`
 	WithEndpoint int `json:"with_endpoint"`
 	Errors       int `json:"errors"`
@@ -51,9 +54,99 @@ func (s *Server) ListenAndServe() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.index)
 	mux.HandleFunc("/api/summary", s.apiSummary)
+	mux.HandleFunc("/api/create-domain", s.apiCreateDomain)
+	mux.HandleFunc("/api/approve-node", s.apiApproveNode)
 	mux.HandleFunc("/api/run-natter", s.apiRunNatter)
 	log.Printf("wgnh web ui listening on http://%s", s.addr)
 	return http.ListenAndServe(s.addr, mux)
+}
+
+func (s *Server) apiCreateDomain(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"ok": false, "error": "method not allowed"})
+		return
+	}
+	var req struct {
+		daemonCredentials
+		DomainID    string `json:"domain_id"`
+		Name        string `json:"name"`
+		JoinCode    string `json:"join_code"`
+		Description string `json:"description"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	creds := s.withDefaults(req.daemonCredentials)
+	if err := validateCredentials(creds); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	if strings.TrimSpace(req.DomainID) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "domain_id is required"})
+		return
+	}
+	resp, err := rpc.Call(r.Context(), creds.DaemonAddr, rpc.Request{
+		Kind:        "admin.create_domain",
+		AdminToken:  creds.AdminToken,
+		DomainID:    strings.TrimSpace(req.DomainID),
+		Name:        strings.TrimSpace(req.Name),
+		JoinCode:    strings.TrimSpace(req.JoinCode),
+		Description: strings.TrimSpace(req.Description),
+	}, 10*time.Second)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) apiApproveNode(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"ok": false, "error": "method not allowed"})
+		return
+	}
+	var req struct {
+		daemonCredentials
+		NodeID       string `json:"node_id"`
+		DomainID     string `json:"domain_id"`
+		Role         string `json:"role"`
+		NodeType     string `json:"node_type"`
+		Interface    string `json:"interface"`
+		ConfigType   string `json:"config_type"`
+		ReloadMethod string `json:"reload_method"`
+		Name         string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	creds := s.withDefaults(req.daemonCredentials)
+	if err := validateCredentials(creds); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	if strings.TrimSpace(req.NodeID) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "node_id is required"})
+		return
+	}
+	resp, err := rpc.Call(r.Context(), creds.DaemonAddr, rpc.Request{
+		Kind:         "admin.approve_node",
+		AdminToken:   creds.AdminToken,
+		NodeID:       strings.TrimSpace(req.NodeID),
+		DomainID:     strings.TrimSpace(req.DomainID),
+		Role:         strings.TrimSpace(req.Role),
+		NodeType:     strings.TrimSpace(req.NodeType),
+		Interface:    strings.TrimSpace(req.Interface),
+		ConfigType:   strings.TrimSpace(req.ConfigType),
+		ReloadMethod: strings.TrimSpace(req.ReloadMethod),
+		Name:         strings.TrimSpace(req.Name),
+	}, 10*time.Second)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) index(w http.ResponseWriter, r *http.Request) {
@@ -147,6 +240,10 @@ func validateCredentials(req daemonCredentials) error {
 }
 
 func load(ctx context.Context, daemonAddr, adminToken string) (dashboardData, error) {
+	domainsResp, err := rpc.Call(ctx, daemonAddr, rpc.Request{Kind: "admin.domains", AdminToken: adminToken}, 10*time.Second)
+	if err != nil {
+		return dashboardData{}, fmt.Errorf("load domains: %w", err)
+	}
 	nodesResp, err := rpc.Call(ctx, daemonAddr, rpc.Request{Kind: "admin.nodes", AdminToken: adminToken}, 10*time.Second)
 	if err != nil {
 		return dashboardData{}, fmt.Errorf("load nodes: %w", err)
@@ -160,16 +257,33 @@ func load(ctx context.Context, daemonAddr, adminToken string) (dashboardData, er
 		return dashboardData{}, fmt.Errorf("load events: %w", err)
 	}
 
+	domains := domainsResp.Domains
 	nodes := nodesResp.Nodes
 	bindings := bindingsResp.Bindings
 	events := eventsResp.Events
+	if domains == nil {
+		domains = []store.Domain{}
+	}
+	if nodes == nil {
+		nodes = []store.Node{}
+	}
+	if bindings == nil {
+		bindings = []store.Binding{}
+	}
+	if events == nil {
+		events = []store.Event{}
+	}
+	sort.Slice(domains, func(i, j int) bool { return domains[i].ID < domains[j].ID })
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].ID < nodes[j].ID })
 	sort.Slice(bindings, func(i, j int) bool { return bindings[i].ID < bindings[j].ID })
 
-	st := stats{Nodes: len(nodes), Bindings: len(bindings)}
+	st := stats{Nodes: len(nodes), Domains: len(domains), Bindings: len(bindings)}
 	for _, node := range nodes {
 		if node.Status == "online" {
 			st.Online++
+		}
+		if !node.Approved || node.Status == "pending" {
+			st.Pending++
 		}
 	}
 	for _, binding := range bindings {
@@ -186,6 +300,7 @@ func load(ctx context.Context, daemonAddr, adminToken string) (dashboardData, er
 	return dashboardData{
 		DaemonAddr:  daemonAddr,
 		GeneratedAt: time.Now().Format("2006-01-02 15:04:05"),
+		Domains:     domains,
 		Nodes:       nodes,
 		Bindings:    bindings,
 		Events:      events,
@@ -266,7 +381,7 @@ const pageHTML = `<!doctype html>
       box-shadow: var(--shadow);
     }
     label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; font-weight: 650; }
-    input {
+    input, select, textarea {
       width: 100%;
       min-height: 38px;
       border: 1px solid var(--line);
@@ -276,9 +391,10 @@ const pageHTML = `<!doctype html>
       background: #fff;
       font: inherit;
     }
+    textarea { min-height: 72px; resize: vertical; }
     .stats {
       display: grid;
-      grid-template-columns: repeat(5, minmax(140px, 1fr));
+      grid-template-columns: repeat(6, minmax(130px, 1fr));
       gap: 12px;
       margin-bottom: 18px;
     }
@@ -360,6 +476,47 @@ const pageHTML = `<!doctype html>
     }
     button:disabled { opacity: .55; cursor: wait; }
     .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .form-grid {
+      display: grid;
+      grid-template-columns: 180px minmax(180px, 1fr) minmax(220px, 1.4fr) auto;
+      gap: 10px;
+      align-items: end;
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--line);
+      background: #fbfcfd;
+    }
+    .domain-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 12px;
+      padding: 14px 16px;
+    }
+    .domain {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: #fff;
+    }
+    .domain-title { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
+    .domain-title strong { font-size: 14px; }
+    .domain-desc { margin-top: 8px; color: var(--muted); white-space: normal; }
+    .join-result {
+      display: none;
+      margin: 12px 16px 0;
+      padding: 10px 12px;
+      border: 1px solid #abefc6;
+      border-radius: 8px;
+      background: #ecfdf3;
+      color: #067647;
+    }
+    .approval {
+      display: grid;
+      grid-template-columns: repeat(7, minmax(120px, 1fr)) auto;
+      gap: 8px;
+      min-width: 980px;
+    }
+    .node-name { display: grid; gap: 5px; }
+    .mini { font-size: 12px; color: var(--muted); }
     .muted { color: var(--muted); }
     .wrap { white-space: normal; min-width: 220px; }
     .scroll { overflow-x: auto; }
@@ -380,6 +537,7 @@ const pageHTML = `<!doctype html>
     @media (max-width: 980px) {
       .top { align-items: flex-start; flex-direction: column; }
       .connect { grid-template-columns: 1fr; }
+      .form-grid { grid-template-columns: 1fr; }
       .stats { grid-template-columns: repeat(2, minmax(130px, 1fr)); }
       main { padding: 16px; }
       button { width: 100%; }
@@ -412,19 +570,41 @@ const pageHTML = `<!doctype html>
     </div>
 
     <div class="stats">
+      <div class="stat"><div class="label">Domain</div><div id="statDomains" class="value">-</div></div>
       <div class="stat"><div class="label">节点</div><div id="statNodes" class="value">-</div></div>
       <div class="stat"><div class="label">在线节点</div><div id="statOnline" class="value">-</div></div>
+      <div class="stat"><div class="label">待审批</div><div id="statPending" class="value">-</div></div>
       <div class="stat"><div class="label">绑定</div><div id="statBindings" class="value">-</div></div>
-      <div class="stat"><div class="label">已有 Endpoint</div><div id="statEndpoints" class="value">-</div></div>
       <div class="stat"><div class="label">错误事件</div><div id="statErrors" class="value">-</div></div>
     </div>
+
+    <section>
+      <div class="section-head">
+        <h2>Domain</h2>
+        <span class="muted">创建后把 join code 填到节点 agent 配置里</span>
+      </div>
+      <div class="form-grid">
+        <label>Domain ID
+          <input id="domainID" autocomplete="off" placeholder="home">
+        </label>
+        <label>名称
+          <input id="domainName" autocomplete="off" placeholder="家庭网络">
+        </label>
+        <label>说明
+          <input id="domainDescription" autocomplete="off" placeholder="可选，例如 home-a server + mobile peers">
+        </label>
+        <button id="createDomainBtn">创建 Domain</button>
+      </div>
+      <div id="joinResult" class="join-result"></div>
+      <div id="domainsBody" class="domain-grid"><div class="empty">尚未连接 daemon</div></div>
+    </section>
 
     <section>
       <div class="section-head"><h2>节点</h2></div>
       <div class="scroll">
         <table>
-          <thead><tr><th>节点</th><th>角色</th><th>状态</th><th>平台</th><th>版本</th><th>最后心跳</th></tr></thead>
-          <tbody id="nodesBody"><tr><td colspan="6" class="empty">尚未连接 daemon</td></tr></tbody>
+          <thead><tr><th>节点</th><th>Domain</th><th>角色</th><th>状态</th><th>平台</th><th>接口</th><th>最后心跳</th><th>操作</th></tr></thead>
+          <tbody id="nodesBody"><tr><td colspan="8" class="empty">尚未连接 daemon</td></tr></tbody>
         </table>
       </div>
     </section>
@@ -462,6 +642,7 @@ const pageHTML = `<!doctype html>
     const refreshBtn = document.getElementById('refreshBtn');
     const forgetBtn = document.getElementById('forgetBtn');
     const showTokenBtn = document.getElementById('showTokenBtn');
+    const createDomainBtn = document.getElementById('createDomainBtn');
     let refreshTimer = null;
 
     daemonAddrInput.value = localStorage.getItem(storage.daemonAddr) || daemonAddrInput.value || defaultDaemonAddr;
@@ -471,6 +652,7 @@ const pageHTML = `<!doctype html>
     refreshBtn.addEventListener('click', () => refresh(false));
     forgetBtn.addEventListener('click', forgetConnection);
     showTokenBtn.addEventListener('click', toggleToken);
+    createDomainBtn.addEventListener('click', createDomain);
 
     if (daemonAddrInput.value && adminTokenInput.value) {
       refresh(false);
@@ -548,6 +730,65 @@ const pageHTML = `<!doctype html>
       }
     }
 
+    async function createDomain() {
+      const domainID = document.getElementById('domainID').value.trim();
+      const name = document.getElementById('domainName').value.trim();
+      const description = document.getElementById('domainDescription').value.trim();
+      if (!domainID) {
+        toast('请先填写 Domain ID');
+        return;
+      }
+      createDomainBtn.disabled = true;
+      try {
+        const data = await postJSON('/api/create-domain', {
+          ...credentials(),
+          domain_id: domainID,
+          name,
+          description
+        });
+        const domain = data.domain || {};
+        showJoinResult(domain);
+        document.getElementById('domainID').value = '';
+        document.getElementById('domainName').value = '';
+        document.getElementById('domainDescription').value = '';
+        toast('Domain 已创建: ' + (domain.id || domainID));
+        await refresh(false);
+      } catch (err) {
+        toast('创建失败: ' + err.message);
+      } finally {
+        createDomainBtn.disabled = false;
+      }
+    }
+
+    async function approveNode(node, idx, btn) {
+      const prefix = 'approve-' + idx + '-';
+      const payload = {
+        ...credentials(),
+        node_id: node.id,
+        domain_id: field(prefix + 'domain').value,
+        role: field(prefix + 'role').value,
+        node_type: field(prefix + 'nodeType').value,
+        interface: field(prefix + 'interface').value.trim(),
+        config_type: field(prefix + 'configType').value,
+        reload_method: field(prefix + 'reloadMethod').value,
+        name: field(prefix + 'name').value.trim()
+      };
+      if (!payload.domain_id || !payload.role || !payload.interface) {
+        toast('审批需要选择 domain、角色并填写接口');
+        return;
+      }
+      btn.disabled = true;
+      try {
+        await postJSON('/api/approve-node', payload);
+        toast('节点已审批: ' + node.id);
+        await refresh(false);
+      } catch (err) {
+        toast('审批失败: ' + err.message);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
     async function postJSON(url, body) {
       const res = await fetch(url, {
         method: 'POST',
@@ -561,30 +802,72 @@ const pageHTML = `<!doctype html>
 
     function render(data) {
       document.getElementById('subtitle').innerHTML = 'daemon <code>' + escapeHTML(data.daemon_addr) + '</code> · ' + escapeHTML(data.generated_at) + ' · 自动刷新 15s';
+      document.getElementById('statDomains').textContent = data.stats.domains;
       document.getElementById('statNodes').textContent = data.stats.nodes;
       document.getElementById('statOnline').textContent = data.stats.online;
+      document.getElementById('statPending').textContent = data.stats.pending;
       document.getElementById('statBindings').textContent = data.stats.bindings;
-      document.getElementById('statEndpoints').textContent = data.stats.with_endpoint;
       document.getElementById('statErrors').textContent = data.stats.errors;
-      renderNodes(data.nodes || []);
+      renderDomains(data.domains || []);
+      renderNodes(data.nodes || [], data.domains || []);
       renderBindings(data.bindings || []);
       renderEvents(data.events || []);
     }
 
-    function renderNodes(nodes) {
-      const body = document.getElementById('nodesBody');
-      if (!nodes.length) {
-        body.innerHTML = '<tr><td colspan="6" class="empty">暂无节点</td></tr>';
+    function renderDomains(domains) {
+      const body = document.getElementById('domainsBody');
+      if (!domains.length) {
+        body.innerHTML = '<div class="empty">暂无 domain。先创建一个 domain，然后把 join code 填到节点 agent 配置里。</div>';
         return;
       }
-      body.innerHTML = nodes.map(node => '<tr>'
-        + '<td><code>' + escapeHTML(node.id) + '</code></td>'
-        + '<td>' + escapeHTML(node.role) + '</td>'
-        + '<td><span class="badge ' + escapeAttr(node.status) + '">' + escapeHTML(node.status) + '</span></td>'
-        + '<td>' + escapeHTML(node.platform) + '</td>'
-        + '<td>' + escapeHTML(node.agent_version) + '</td>'
-        + '<td>' + escapeHTML(node.last_seen_at) + '</td>'
-        + '</tr>').join('');
+      body.innerHTML = domains.map(domain => '<div class="domain">'
+        + '<div class="domain-title"><div><strong>' + escapeHTML(domain.name || domain.id) + '</strong><div class="mini"><code>' + escapeHTML(domain.id) + '</code></div></div>'
+        + '<span class="badge">' + escapeHTML(domain.created_at || 'created') + '</span></div>'
+        + '<div class="domain-desc">' + escapeHTML(domain.description || '无说明') + '</div>'
+        + '</div>').join('');
+    }
+
+    function renderNodes(nodes, domains) {
+      const body = document.getElementById('nodesBody');
+      if (!nodes.length) {
+        body.innerHTML = '<tr><td colspan="8" class="empty">暂无节点。启动 agent 并填写 join_code 后，这里会出现待审批节点。</td></tr>';
+        return;
+      }
+      body.innerHTML = nodes.map((node, idx) => {
+        const pending = !node.approved || node.status === 'pending';
+        return '<tr>'
+          + '<td><div class="node-name"><code>' + escapeHTML(node.id) + '</code><span class="mini">' + escapeHTML(node.name || '') + '</span></div></td>'
+          + '<td><code>' + escapeHTML(node.domain_id || '-') + '</code></td>'
+          + '<td>' + escapeHTML(node.role || '-') + '</td>'
+          + '<td><span class="badge ' + escapeAttr(node.status) + '">' + escapeHTML(node.status || '-') + '</span> ' + (node.approved ? '<span class="badge online">approved</span>' : '<span class="badge warning">pending</span>') + '</td>'
+          + '<td>' + escapeHTML(node.node_type || node.platform || '-') + '<div class="mini">' + escapeHTML(node.agent_version || '') + '</div></td>'
+          + '<td><code>' + escapeHTML(node.interface || '-') + '</code><div class="mini">' + escapeHTML(node.config_type || '') + ' ' + escapeHTML(node.reload_method || '') + '</div></td>'
+          + '<td>' + escapeHTML(node.last_seen_at || '-') + '</td>'
+          + '<td>' + (pending ? approvalControls(node, idx, domains) : '<span class="muted">无需操作</span>') + '</td>'
+          + '</tr>';
+      }).join('');
+      body.querySelectorAll('button[data-approve]').forEach(btn => {
+        const idx = Number(btn.dataset.approve);
+        btn.addEventListener('click', () => approveNode(nodes[idx], idx, btn));
+      });
+    }
+
+    function approvalControls(node, idx, domains) {
+      const id = 'approve-' + idx + '-';
+      const domainOptions = domains.map(domain => '<option value="' + escapeValue(domain.id) + '"' + selected(domain.id, node.domain_id) + '>' + escapeHTML(domain.name || domain.id) + '</option>').join('');
+      const defaultNodeType = node.node_type || inferNodeType(node.platform);
+      const defaultConfigType = node.config_type || (defaultNodeType === 'openwrt' ? 'openwrt_uci' : 'wg_conf');
+      const defaultReload = node.reload_method || (defaultNodeType === 'openwrt' ? 'ifup' : 'wg-quick-restart');
+      return '<div class="approval">'
+        + '<input id="' + id + 'name" placeholder="节点名称" value="' + escapeValue(node.name || '') + '">'
+        + '<select id="' + id + 'domain">' + domainOptions + '</select>'
+        + '<select id="' + id + 'role"><option value="client"' + selected('client', node.role || 'client') + '>client</option><option value="server"' + selected('server', node.role) + '>server</option></select>'
+        + '<select id="' + id + 'nodeType"><option value="linux"' + selected('linux', defaultNodeType) + '>linux</option><option value="openwrt"' + selected('openwrt', defaultNodeType) + '>openwrt</option></select>'
+        + '<input id="' + id + 'interface" placeholder="wg0" value="' + escapeValue(node.interface || 'wg0') + '">'
+        + '<select id="' + id + 'configType"><option value="wg_conf"' + selected('wg_conf', defaultConfigType) + '>wg_conf</option><option value="openwrt_uci"' + selected('openwrt_uci', defaultConfigType) + '>openwrt_uci</option><option value="runtime"' + selected('runtime', defaultConfigType) + '>runtime</option></select>'
+        + '<select id="' + id + 'reloadMethod"><option value="wg-quick-restart"' + selected('wg-quick-restart', defaultReload) + '>wg-quick-restart</option><option value="ifup"' + selected('ifup', defaultReload) + '>ifup</option><option value="none"' + selected('none', defaultReload) + '>none</option></select>'
+        + '<button data-approve="' + idx + '">允许加入</button>'
+        + '</div>';
     }
 
     function renderBindings(bindings) {
@@ -629,6 +912,31 @@ const pageHTML = `<!doctype html>
         + '</tr>').join('');
     }
 
+    function showJoinResult(domain) {
+      const el = document.getElementById('joinResult');
+      if (!domain || !domain.join_code) {
+        el.style.display = 'none';
+        el.textContent = '';
+        return;
+      }
+      el.innerHTML = 'Domain <code>' + escapeHTML(domain.id) + '</code> 已创建。节点 agent 配置里填写 join_code: <code>' + escapeHTML(domain.join_code) + '</code>';
+      el.style.display = 'block';
+    }
+
+    function field(id) {
+      return document.getElementById(id);
+    }
+
+    function selected(value, current) {
+      return String(value || '') === String(current || '') ? ' selected' : '';
+    }
+
+    function inferNodeType(platform) {
+      const value = String(platform || '').toLowerCase();
+      if (value.includes('openwrt')) return 'openwrt';
+      return 'linux';
+    }
+
     function scheduleRefresh() {
       clearRefreshTimer();
       refreshTimer = setTimeout(() => refresh(false), 15000);
@@ -666,6 +974,10 @@ const pageHTML = `<!doctype html>
 
     function escapeAttr(value) {
       return escapeHTML(value).replace(/[^a-zA-Z0-9_-]/g, '');
+    }
+
+    function escapeValue(value) {
+      return escapeHTML(value);
     }
   </script>
 </body>
