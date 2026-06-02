@@ -66,7 +66,7 @@ func daemonCmd(args []string) {
 		fmt.Printf("token=%s\n", token)
 	case "create-domain":
 		fs := flag.NewFlagSet("wgnh daemon create-domain", flag.ExitOnError)
-		addr := fs.String("addr", "127.0.0.1:8080", "daemon TCP address")
+		addr := fs.String("addr", "127.0.0.1:3333", "daemon TCP address")
 		adminToken := fs.String("admin-token", "", "admin token")
 		id := fs.String("id", "", "domain id")
 		name := fs.String("name", "", "domain name")
@@ -88,7 +88,7 @@ func daemonCmd(args []string) {
 		fmt.Println(pretty(resp))
 	case "approve-node":
 		fs := flag.NewFlagSet("wgnh daemon approve-node", flag.ExitOnError)
-		addr := fs.String("addr", "127.0.0.1:8080", "daemon TCP address")
+		addr := fs.String("addr", "127.0.0.1:3333", "daemon TCP address")
 		adminToken := fs.String("admin-token", "", "admin token")
 		nodeID := fs.String("node", "", "node id")
 		domainID := fs.String("domain", "", "domain id")
@@ -140,7 +140,7 @@ func daemonCmd(args []string) {
 	case "serve":
 		fs := flag.NewFlagSet("wgnh daemon serve", flag.ExitOnError)
 		state := fs.String("state", "wgnh-state.json", "state file")
-		addr := fs.String("addr", "127.0.0.1:8080", "listen address")
+		addr := fs.String("addr", "127.0.0.1:3333", "listen address")
 		adminToken := fs.String("admin-token", "", "optional admin token required for TCP admin requests")
 		natterCooldown := fs.Duration("natter-cooldown", 5*time.Minute, "automatic natter trigger cooldown per server/interface")
 		_ = fs.Parse(args[1:])
@@ -152,7 +152,7 @@ func daemonCmd(args []string) {
 		must(server.ListenAndServe(*addr))
 	case "run-natter":
 		fs := flag.NewFlagSet("wgnh daemon run-natter", flag.ExitOnError)
-		addr := fs.String("addr", "127.0.0.1:8080", "daemon TCP address")
+		addr := fs.String("addr", "127.0.0.1:3333", "daemon TCP address")
 		adminToken := fs.String("admin-token", "", "admin token")
 		serverNode := fs.String("server-node", "", "server node id")
 		serverInterface := fs.String("server-interface", "", "server WireGuard interface")
@@ -178,7 +178,7 @@ func daemonCmd(args []string) {
 		adminList(*flagSetAddrToken("wgnh daemon wireguard", args[1:]), "admin.wireguard")
 	case "events":
 		fs := flag.NewFlagSet("wgnh daemon events", flag.ExitOnError)
-		addr := fs.String("addr", "127.0.0.1:8080", "daemon TCP address")
+		addr := fs.String("addr", "127.0.0.1:3333", "daemon TCP address")
 		adminToken := fs.String("admin-token", "", "admin token")
 		limit := fs.Int("limit", 100, "event limit")
 		_ = fs.Parse(args[1:])
@@ -202,7 +202,7 @@ type addrTokenFlags struct {
 
 func flagSetAddrToken(name string, args []string) *addrTokenFlags {
 	fs := flag.NewFlagSet(name, flag.ExitOnError)
-	addr := fs.String("addr", "127.0.0.1:8080", "daemon TCP address")
+	addr := fs.String("addr", "127.0.0.1:3333", "daemon TCP address")
 	adminToken := fs.String("admin-token", "", "admin token")
 	_ = fs.Parse(args)
 	return &addrTokenFlags{Addr: *addr, AdminToken: *adminToken}
