@@ -174,6 +174,8 @@ func daemonCmd(args []string) {
 		adminList(*flagSetAddrToken("wgnh daemon domains", args[1:]), "admin.domains")
 	case "bindings":
 		adminList(*flagSetAddrToken("wgnh daemon bindings", args[1:]), "admin.bindings")
+	case "wireguard":
+		adminList(*flagSetAddrToken("wgnh daemon wireguard", args[1:]), "admin.wireguard")
 	case "events":
 		fs := flag.NewFlagSet("wgnh daemon events", flag.ExitOnError)
 		addr := fs.String("addr", "127.0.0.1:8080", "daemon TCP address")
@@ -248,7 +250,7 @@ func usage() {
 }
 
 func daemonUsage() {
-	fmt.Fprintln(os.Stderr, "usage: wgnh daemon <init|create-domain|create-node|approve-node|add-binding|serve|run-natter|domains|nodes|bindings|events> ...")
+	fmt.Fprintln(os.Stderr, "usage: wgnh daemon <init|create-domain|create-node|approve-node|add-binding|serve|run-natter|domains|nodes|bindings|wireguard|events> ...")
 }
 
 func must(err error) {

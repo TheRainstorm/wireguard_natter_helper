@@ -104,6 +104,11 @@ func (s *Server) handle(req rpc.Request, remote string) rpc.Response {
 			return rpc.Response{OK: false, Error: err.Error()}
 		}
 		return rpc.Response{OK: true, Bindings: s.store.Bindings()}
+	case "admin.wireguard":
+		if err := s.authenticateAdmin(req); err != nil {
+			return rpc.Response{OK: false, Error: err.Error()}
+		}
+		return rpc.Response{OK: true, WGInterfaces: s.store.WGInterfaces()}
 	case "admin.events":
 		if err := s.authenticateAdmin(req); err != nil {
 			return rpc.Response{OK: false, Error: err.Error()}

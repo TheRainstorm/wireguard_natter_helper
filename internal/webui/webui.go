@@ -22,13 +22,14 @@ type Server struct {
 }
 
 type dashboardData struct {
-	DaemonAddr  string          `json:"daemon_addr"`
-	GeneratedAt string          `json:"generated_at"`
-	Domains     []store.Domain  `json:"domains"`
-	Nodes       []store.Node    `json:"nodes"`
-	Bindings    []store.Binding `json:"bindings"`
-	Events      []store.Event   `json:"events"`
-	Stats       stats           `json:"stats"`
+	DaemonAddr   string              `json:"daemon_addr"`
+	GeneratedAt  string              `json:"generated_at"`
+	Domains      []store.Domain      `json:"domains"`
+	Nodes        []store.Node        `json:"nodes"`
+	WGInterfaces []store.WGInterface `json:"wireguard_interfaces"`
+	Bindings     []store.Binding     `json:"bindings"`
+	Events       []store.Event       `json:"events"`
+	Stats        stats               `json:"stats"`
 }
 
 type stats struct {
@@ -37,6 +38,7 @@ type stats struct {
 	Pending      int `json:"pending"`
 	Domains      int `json:"domains"`
 	Bindings     int `json:"bindings"`
+	Interfaces   int `json:"interfaces"`
 	WithEndpoint int `json:"with_endpoint"`
 	Errors       int `json:"errors"`
 }
@@ -252,6 +254,10 @@ func load(ctx context.Context, daemonAddr, adminToken string) (dashboardData, er
 	if err != nil {
 		return dashboardData{}, fmt.Errorf("load bindings: %w", err)
 	}
+	wgResp, err := rpc.Call(ctx, daemonAddr, rpc.Request{Kind: "admin.wireguard", AdminToken: adminToken}, 10*time.Second)
+	if err != nil {
+		return dashboardData{}, fmt.Errorf("load wireguard inventory: %w", err)
+	}
 	eventsResp, err := rpc.Call(ctx, daemonAddr, rpc.Request{Kind: "admin.events", AdminToken: adminToken, Limit: 80}, 10*time.Second)
 	if err != nil {
 		return dashboardData{}, fmt.Errorf("load events: %w", err)
@@ -260,6 +266,7 @@ func load(ctx context.Context, daemonAddr, adminToken string) (dashboardData, er
 	domains := domainsResp.Domains
 	nodes := nodesResp.Nodes
 	bindings := bindingsResp.Bindings
+	wgInterfaces := wgResp.WGInterfaces
 	events := eventsResp.Events
 	if domains == nil {
 		domains = []store.Domain{}
@@ -270,14 +277,23 @@ func load(ctx context.Context, daemonAddr, adminToken string) (dashboardData, er
 	if bindings == nil {
 		bindings = []store.Binding{}
 	}
+	if wgInterfaces == nil {
+		wgInterfaces = []store.WGInterface{}
+	}
 	if events == nil {
 		events = []store.Event{}
 	}
 	sort.Slice(domains, func(i, j int) bool { return domains[i].ID < domains[j].ID })
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].ID < nodes[j].ID })
 	sort.Slice(bindings, func(i, j int) bool { return bindings[i].ID < bindings[j].ID })
+	sort.Slice(wgInterfaces, func(i, j int) bool {
+		if wgInterfaces[i].NodeID == wgInterfaces[j].NodeID {
+			return wgInterfaces[i].Name < wgInterfaces[j].Name
+		}
+		return wgInterfaces[i].NodeID < wgInterfaces[j].NodeID
+	})
 
-	st := stats{Nodes: len(nodes), Domains: len(domains), Bindings: len(bindings)}
+	st := stats{Nodes: len(nodes), Domains: len(domains), Bindings: len(bindings), Interfaces: len(wgInterfaces)}
 	for _, node := range nodes {
 		if node.Status == "online" {
 			st.Online++
@@ -298,13 +314,14 @@ func load(ctx context.Context, daemonAddr, adminToken string) (dashboardData, er
 	}
 
 	return dashboardData{
-		DaemonAddr:  daemonAddr,
-		GeneratedAt: time.Now().Format("2006-01-02 15:04:05"),
-		Domains:     domains,
-		Nodes:       nodes,
-		Bindings:    bindings,
-		Events:      events,
-		Stats:       st,
+		DaemonAddr:   daemonAddr,
+		GeneratedAt:  time.Now().Format("2006-01-02 15:04:05"),
+		Domains:      domains,
+		Nodes:        nodes,
+		WGInterfaces: wgInterfaces,
+		Bindings:     bindings,
+		Events:       events,
+		Stats:        st,
 	}, nil
 }
 
@@ -394,7 +411,7 @@ const pageHTML = `<!doctype html>
     textarea { min-height: 72px; resize: vertical; }
     .stats {
       display: grid;
-      grid-template-columns: repeat(6, minmax(130px, 1fr));
+      grid-template-columns: repeat(7, minmax(120px, 1fr));
       gap: 12px;
       margin-bottom: 18px;
     }
@@ -574,6 +591,7 @@ const pageHTML = `<!doctype html>
       <div class="stat"><div class="label">节点</div><div id="statNodes" class="value">-</div></div>
       <div class="stat"><div class="label">在线节点</div><div id="statOnline" class="value">-</div></div>
       <div class="stat"><div class="label">待审批</div><div id="statPending" class="value">-</div></div>
+      <div class="stat"><div class="label">WG 接口</div><div id="statInterfaces" class="value">-</div></div>
       <div class="stat"><div class="label">绑定</div><div id="statBindings" class="value">-</div></div>
       <div class="stat"><div class="label">错误事件</div><div id="statErrors" class="value">-</div></div>
     </div>
@@ -605,6 +623,19 @@ const pageHTML = `<!doctype html>
         <table>
           <thead><tr><th>节点</th><th>Domain</th><th>角色</th><th>状态</th><th>平台</th><th>接口</th><th>最后心跳</th><th>操作</th></tr></thead>
           <tbody id="nodesBody"><tr><td colspan="8" class="empty">尚未连接 daemon</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>WireGuard 自动发现</h2>
+        <span class="muted">server 公钥出现在 client peer 列表中时会自动生成绑定</span>
+      </div>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>节点</th><th>接口</th><th>本机公钥</th><th>Listen</th><th>Peers</th><th>配置</th><th>更新时间</th></tr></thead>
+          <tbody id="interfacesBody"><tr><td colspan="7" class="empty">尚未连接 daemon</td></tr></tbody>
         </table>
       </div>
     </section>
@@ -806,10 +837,12 @@ const pageHTML = `<!doctype html>
       document.getElementById('statNodes').textContent = data.stats.nodes;
       document.getElementById('statOnline').textContent = data.stats.online;
       document.getElementById('statPending').textContent = data.stats.pending;
+      document.getElementById('statInterfaces').textContent = data.stats.interfaces;
       document.getElementById('statBindings').textContent = data.stats.bindings;
       document.getElementById('statErrors').textContent = data.stats.errors;
       renderDomains(data.domains || []);
       renderNodes(data.nodes || [], data.domains || []);
+      renderInterfaces(data.wireguard_interfaces || []);
       renderBindings(data.bindings || []);
       renderEvents(data.events || []);
     }
@@ -868,6 +901,26 @@ const pageHTML = `<!doctype html>
         + '<select id="' + id + 'reloadMethod"><option value="wg-quick-restart"' + selected('wg-quick-restart', defaultReload) + '>wg-quick-restart</option><option value="ifup"' + selected('ifup', defaultReload) + '>ifup</option><option value="none"' + selected('none', defaultReload) + '>none</option></select>'
         + '<button data-approve="' + idx + '">允许加入</button>'
         + '</div>';
+    }
+
+    function renderInterfaces(interfaces) {
+      const body = document.getElementById('interfacesBody');
+      if (!interfaces.length) {
+        body.innerHTML = '<tr><td colspan="7" class="empty">暂无 WireGuard inventory。agent 需要能执行 wg show，或至少配置 wireguard.name 后等待下一次心跳。</td></tr>';
+        return;
+      }
+      body.innerHTML = interfaces.map(item => {
+        const peers = (item.peers || []).map(peer => '<code>' + escapeHTML(shortKey(peer)) + '</code>').join(' ');
+        return '<tr>'
+          + '<td><code>' + escapeHTML(item.node_id) + '</code></td>'
+          + '<td><code>' + escapeHTML(item.name) + '</code></td>'
+          + '<td><code>' + escapeHTML(shortKey(item.public_key || '')) + '</code></td>'
+          + '<td>' + (item.listen_port ? escapeHTML(item.listen_port) : '<span class="muted">-</span>') + '</td>'
+          + '<td class="wrap">' + (peers || '<span class="muted">无 peer</span>') + '</td>'
+          + '<td><span class="badge">' + escapeHTML(item.config_type || 'runtime') + '</span> <span class="muted">' + escapeHTML(item.config_path || '') + '</span></td>'
+          + '<td>' + escapeHTML(item.updated_at || '-') + '</td>'
+          + '</tr>';
+      }).join('');
     }
 
     function renderBindings(bindings) {
@@ -935,6 +988,12 @@ const pageHTML = `<!doctype html>
       const value = String(platform || '').toLowerCase();
       if (value.includes('openwrt')) return 'openwrt';
       return 'linux';
+    }
+
+    function shortKey(value) {
+      value = String(value || '');
+      if (value.length <= 14) return value;
+      return value.slice(0, 7) + '...' + value.slice(-6);
     }
 
     function scheduleRefresh() {
