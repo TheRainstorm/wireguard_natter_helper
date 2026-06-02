@@ -1,8 +1,8 @@
 {
-  "node_id": "office-b",
   "daemon_addr": "127.0.0.1:3333",
-  "token": "replace-with-node-token",
-  "role": "client",
+  "join_code": "replace-with-domain-join-code",
+  "node_name": "office-b",
+  "state_path": "/etc/wgnh/node-state.json",
   "retry_seconds": 5,
   "dry_run": true,
   "wireguard": [

@@ -16,6 +16,8 @@ VPS daemon 不提供 HTTP API，只监听自定义 TCP JSON-line 协议。Web UI
 ## 功能
 
 - VPS 使用自定义 TCP 控制协议，不暴露 HTTP API。
+- Web UI 创建 domain，节点使用 join code 申请加入，管理员在网页里审批。
+- agent 自动上报 WireGuard 接口、公钥和 peer 列表，daemon 可自动生成 binding。
 - 节点 token 认证，管理命令可配置 admin token。
 - 支持 OpenWrt UCI endpoint 更新。
 - 支持 Linux `wg.conf` endpoint 更新。
@@ -221,77 +223,14 @@ docker run -d --name wgnh-daemon \
   --admin-token 'change-this-to-a-long-random-string'
 ```
 
-真实使用前，先按下面步骤初始化 state 并创建节点。
+真实使用前，按下面的简化流程使用：先在 VPS 启动 daemon，再用 Web UI 创建 domain，节点只需要填同一个 join code，最后在网页里审批节点。通常不需要手动创建 node token，也不需要手动 add-binding。
 
-## 1. 在 VPS 初始化 daemon
-
-```sh
-./wgnh daemon init --state /etc/wgnh/state.json
-```
-
-创建 NAT 后的 server 节点：
-
-```sh
-./wgnh daemon create-node \
-  --state /etc/wgnh/state.json \
-  --id home-a \
-  --role server
-```
-
-保存输出的 token，后面填到 `home-a` 的 agent 配置里。
-
-创建 client 节点：
-
-```sh
-./wgnh daemon create-node \
-  --state /etc/wgnh/state.json \
-  --id office-b \
-  --role client
-```
-
-保存输出的 token，后面填到 `office-b` 的 agent 配置里。
-
-## 2. 添加 binding
-
-binding 表示“哪个客户端的 WireGuard peer 需要跟随哪个 server endpoint”。
-
-OpenWrt 客户端示例：
-
-```sh
-./wgnh daemon add-binding \
-  --state /etc/wgnh/state.json \
-  --id home-a-wg0-office-b \
-  --server-node home-a \
-  --server-interface wg0 \
-  --client-node office-b \
-  --client-interface wg0 \
-  --peer-public-key 'A_SERVER_PUBLIC_KEY' \
-  --config-type openwrt_uci \
-  --reload-method ifup
-```
-
-普通 Linux `wg.conf` 客户端示例：
-
-```sh
-./wgnh daemon add-binding \
-  --state /etc/wgnh/state.json \
-  --id home-a-wg0-office-b \
-  --server-node home-a \
-  --server-interface wg0 \
-  --client-node office-b \
-  --client-interface wg0 \
-  --peer-public-key 'A_SERVER_PUBLIC_KEY' \
-  --config-type wg_conf \
-  --config-path /etc/wireguard/wg0.conf \
-  --reload-method wg-quick-restart
-```
-
-`--peer-public-key` 填的是客户端配置里 `[Peer] PublicKey` 对应的 server 公钥，不是客户端自己的公钥。
-
-## 3. 启动 daemon
+## 1. 在 VPS 启动 daemon
 
 ```sh
 ADMIN_TOKEN='change-this-to-a-long-random-string'
+
+./wgnh daemon init --state /etc/wgnh/state.json
 
 ./wgnh daemon serve \
   --state /etc/wgnh/state.json \
@@ -302,16 +241,37 @@ ADMIN_TOKEN='change-this-to-a-long-random-string'
 
 建议用防火墙限制 `3333/tcp` 的访问来源。当前 TCP 协议是明文。
 
-## 4. 配置 NAT 后的 server agent
+## 2. 打开 Web UI，创建 domain
+
+本机运行：
+
+```sh
+./wgnh web --addr 127.0.0.1:9090
+```
+
+或者用 Docker 运行：
+
+```sh
+docker run --rm -p 9090:9090 wgnh:local web --addr 0.0.0.0:9090
+```
+
+打开 `http://127.0.0.1:9090`，输入：
+
+- daemon TCP 地址：`your-vps.example.com:3333`
+- admin token：启动 `wgnh daemon serve --admin-token` 时设置的值
+
+点击连接后，在 `Domain` 区域创建一个 domain，例如 `home`。页面会显示 `join_code`，把这个值复制到后面每台节点的 agent 配置里。浏览器会把 daemon 地址和 admin token 保存到 localStorage。
+
+## 3. 配置 NAT 后的 server agent
 
 `home-a` 上的 `/etc/wgnh/agent.json` 示例：
 
 ```json
 {
-  "node_id": "home-a",
   "daemon_addr": "your-vps.example.com:3333",
-  "token": "token-for-home-a",
-  "role": "server",
+  "join_code": "replace-with-domain-join-code",
+  "node_name": "home-a",
+  "state_path": "/etc/wgnh/node-state.json",
   "retry_seconds": 5,
   "wireguard": [
     {
@@ -338,6 +298,14 @@ ADMIN_TOKEN='change-this-to-a-long-random-string'
 }
 ```
 
+启动 agent：
+
+```sh
+./wgnh agent --config /etc/wgnh/agent.json
+```
+
+第一次启动时，agent 会在 `state_path` 里自动生成本机 `node_id` 和 token，然后用 `join_code` 向 VPS 申请加入。回到 Web UI 的节点表，允许这个节点加入，角色选 `server`，接口填 `wg0`，节点类型按实际选择 `openwrt` 或 `linux`。
+
 `stop_wireguard: true` 很重要：Natter 需要绑定 WireGuard 使用的本地端口，所以 agent 会先停止接口，拿到映射后再启动接口。
 
 `wireguard_control_method` 可选：
@@ -346,22 +314,16 @@ ADMIN_TOKEN='change-this-to-a-long-random-string'
 - `wg-quick`：`wg-quick down wg0` / `wg-quick up wg0`
 - `systemd`：`systemctl stop wg-quick@wg0` / `systemctl start wg-quick@wg0`
 
-启动 agent：
-
-```sh
-./wgnh agent --config /etc/wgnh/agent.json
-```
-
-## 5. 配置 client agent
+## 4. 配置 client agent
 
 `office-b` 上的 `/etc/wgnh/agent.json` 示例：
 
 ```json
 {
-  "node_id": "office-b",
   "daemon_addr": "your-vps.example.com:3333",
-  "token": "token-for-office-b",
-  "role": "client",
+  "join_code": "replace-with-domain-join-code",
+  "node_name": "office-b",
+  "state_path": "/etc/wgnh/node-state.json",
   "retry_seconds": 5,
   "dry_run": false,
   "wireguard": [
@@ -379,51 +341,35 @@ ADMIN_TOKEN='change-this-to-a-long-random-string'
 }
 ```
 
-第一次测试可以先设置 `"dry_run": true`，确认流程正常后再改成 `false`。
-
-监控流程：
-
-1. client agent 执行 `wg show wg0 latest-handshakes`。
-2. peer 连续超过阈值没有 handshake 后，上报给 daemon。
-3. daemon 找到匹配的 binding。
-4. daemon 给 server 节点下发 `natter.run`。
-5. server 上报新 endpoint。
-6. daemon 给 client 节点下发 `endpoint.apply`。
-
 启动 agent：
 
 ```sh
 ./wgnh agent --config /etc/wgnh/agent.json
 ```
 
-## 6. 使用 Web UI
+回到 Web UI，允许这个节点加入，角色选 `client`，接口填 `wg0`。第一次测试可以先设置 `"dry_run": true`，确认流程正常后再改成 `false`。
 
-本机运行：
+## 5. 自动生成 binding
 
-```sh
-./wgnh web --addr 127.0.0.1:9090
-```
+server 和 client 都审批后，daemon 会根据 agent 上报的 WireGuard inventory 自动创建 binding。匹配条件是：同一个 domain 里，`server` 节点的 WireGuard 公钥出现在 `client` 节点的 peer 列表中。
 
-或者用 Docker 运行：
+在 Web UI 里查看：
 
-```sh
-docker run --rm -p 9090:9090 wgnh:local web --addr 0.0.0.0:9090
-```
+- `WireGuard 自动发现`：确认节点是否上报了接口、公钥和 peers。
+- `WireGuard 绑定`：确认是否已经自动生成 binding。
+- `最近事件`：查看 `binding.auto_created` 或错误事件。
 
-打开 `http://127.0.0.1:9090`，输入：
+如果没有自动生成 binding，通常是 client 的 `[Peer] PublicKey` 不是 server 的公钥，或者 agent 所在系统不能执行 `wg show`。
 
-- daemon TCP 地址：`your-vps.example.com:3333`
-- admin token：启动 `wgnh daemon serve --admin-token` 时设置的值
+## 6. 自动更新 endpoint 的流程
 
-浏览器会把这两个值保存到 localStorage。任何能访问 Web UI 的客户端都可以打开页面，但必须输入正确的 admin token 才能连接 daemon。
-
-Web UI 支持：
-
-- 查看节点在线状态
-- 查看 binding 和当前 endpoint
-- 查看最近事件和 payload
-- 手动触发某个 server/interface 执行 Natter
-- 连接成功后每 15 秒自动刷新
+1. client agent 执行 `wg show wg0 latest-handshakes`。
+2. peer 连续超过阈值没有 handshake 后，上报给 daemon。
+3. daemon 找到自动生成的 binding。
+4. daemon 给 server 节点下发 `natter.run`。
+5. server agent 停止 WireGuard、执行 Natter、重启 WireGuard，并上报新公网 endpoint。
+6. daemon 给 client 节点下发 `endpoint.apply`。
+7. client agent 修改本机 WireGuard endpoint，并按配置重启接口。
 
 ## 7. 从 CLI 手动触发 Natter
 
@@ -438,16 +384,37 @@ Web UI 支持：
 ## 8. 从 CLI 查看状态
 
 ```sh
+./wgnh daemon domains --addr your-vps.example.com:3333 --admin-token "$ADMIN_TOKEN"
 ./wgnh daemon nodes --addr your-vps.example.com:3333 --admin-token "$ADMIN_TOKEN"
+./wgnh daemon wireguard --addr your-vps.example.com:3333 --admin-token "$ADMIN_TOKEN"
 ./wgnh daemon bindings --addr your-vps.example.com:3333 --admin-token "$ADMIN_TOKEN"
 ./wgnh daemon events --addr your-vps.example.com:3333 --admin-token "$ADMIN_TOKEN"
 ```
+
+## 仍然可以手动 add-binding
+
+自动 binding 不满足你的拓扑时，可以继续手动添加：
+
+```sh
+./wgnh daemon add-binding \
+  --state /etc/wgnh/state.json \
+  --id home-a-wg0-office-b \
+  --server-node home-a \
+  --server-interface wg0 \
+  --client-node office-b \
+  --client-interface wg0 \
+  --peer-public-key 'A_SERVER_PUBLIC_KEY' \
+  --config-type openwrt_uci \
+  --reload-method ifup
+```
+
+`--peer-public-key` 填的是客户端配置里 `[Peer] PublicKey` 对应的 server 公钥，不是客户端自己的公钥。
 
 ## 常见问题
 
 ### `invalid node credentials`
 
-检查 `node_id`、token 和 daemon 使用的 `--state` 文件。对同一个节点再次执行 `daemon create-node` 会轮换 token，需要同步更新 agent 配置。
+如果使用 join code 模式，先检查 agent 的 `state_path` 文件是否还在，里面保存了自动生成的 `node_id` 和 token。删除这个文件会让 agent 生成新身份，需要在 Web UI 里重新审批。也要确认 daemon 使用的是同一个 `--state` 文件。
 
 ### `connection reset by peer`
 

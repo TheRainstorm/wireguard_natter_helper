@@ -16,6 +16,8 @@ The VPS daemon does not expose HTTP. It listens on a custom TCP JSON-line protoc
 ## Features
 
 - Custom TCP control protocol instead of an HTTP API on the VPS.
+- Web UI domain creation, join-code enrollment, and browser approval.
+- Agent-reported WireGuard interface inventory with automatic binding creation.
 - Node token authentication and optional admin token for management commands.
 - OpenWrt UCI endpoint updates.
 - Linux `wg.conf` endpoint updates.
@@ -221,77 +223,14 @@ docker run -d --name wgnh-daemon \
   --admin-token 'change-this-to-a-long-random-string'
 ```
 
-Initialize the state file and create nodes before starting a real daemon, as shown below.
+Before real use, follow the simplified flow below: start the VPS daemon, create a domain in the Web UI, put the same join code on each node, then approve nodes in the browser. In the normal path you do not need to manually create node tokens or run `add-binding`.
 
-## 1. Initialize the daemon on the VPS
-
-```sh
-./wgnh daemon init --state /etc/wgnh/state.json
-```
-
-Create the NAT-side server node:
-
-```sh
-./wgnh daemon create-node \
-  --state /etc/wgnh/state.json \
-  --id home-a \
-  --role server
-```
-
-Save the printed token for `home-a`.
-
-Create a client node:
-
-```sh
-./wgnh daemon create-node \
-  --state /etc/wgnh/state.json \
-  --id office-b \
-  --role client
-```
-
-Save the printed token for `office-b`.
-
-## 2. Add a binding
-
-A binding tells the daemon which client WireGuard peer should follow which server endpoint.
-
-OpenWrt client example:
-
-```sh
-./wgnh daemon add-binding \
-  --state /etc/wgnh/state.json \
-  --id home-a-wg0-office-b \
-  --server-node home-a \
-  --server-interface wg0 \
-  --client-node office-b \
-  --client-interface wg0 \
-  --peer-public-key 'A_SERVER_PUBLIC_KEY' \
-  --config-type openwrt_uci \
-  --reload-method ifup
-```
-
-Linux `wg.conf` client example:
-
-```sh
-./wgnh daemon add-binding \
-  --state /etc/wgnh/state.json \
-  --id home-a-wg0-office-b \
-  --server-node home-a \
-  --server-interface wg0 \
-  --client-node office-b \
-  --client-interface wg0 \
-  --peer-public-key 'A_SERVER_PUBLIC_KEY' \
-  --config-type wg_conf \
-  --config-path /etc/wireguard/wg0.conf \
-  --reload-method wg-quick-restart
-```
-
-`--peer-public-key` is the server peer public key inside the client config, not the client's own key.
-
-## 3. Start the daemon
+## 1. Start the daemon on the VPS
 
 ```sh
 ADMIN_TOKEN='change-this-to-a-long-random-string'
+
+./wgnh daemon init --state /etc/wgnh/state.json
 
 ./wgnh daemon serve \
   --state /etc/wgnh/state.json \
@@ -302,16 +241,37 @@ ADMIN_TOKEN='change-this-to-a-long-random-string'
 
 Restrict `3333/tcp` with firewall rules. The current TCP protocol is plaintext.
 
-## 4. Configure the NAT-side server agent
+## 2. Open the Web UI and create a domain
+
+Run locally:
+
+```sh
+./wgnh web --addr 127.0.0.1:9090
+```
+
+Or run it in Docker:
+
+```sh
+docker run --rm -p 9090:9090 wgnh:local web --addr 0.0.0.0:9090
+```
+
+Open `http://127.0.0.1:9090`, enter:
+
+- daemon TCP address: `your-vps.example.com:3333`
+- admin token: the value passed to `wgnh daemon serve --admin-token`
+
+After connecting, create a domain such as `home` in the `Domain` section. The page shows a generated `join_code`; copy that value into every agent config below. The browser stores the daemon address and admin token in local storage.
+
+## 3. Configure the NAT-side server agent
 
 Example `/etc/wgnh/agent.json` on `home-a`:
 
 ```json
 {
-  "node_id": "home-a",
   "daemon_addr": "your-vps.example.com:3333",
-  "token": "token-for-home-a",
-  "role": "server",
+  "join_code": "replace-with-domain-join-code",
+  "node_name": "home-a",
+  "state_path": "/etc/wgnh/node-state.json",
   "retry_seconds": 5,
   "wireguard": [
     {
@@ -338,6 +298,14 @@ Example `/etc/wgnh/agent.json` on `home-a`:
 }
 ```
 
+Start the agent:
+
+```sh
+./wgnh agent --config /etc/wgnh/agent.json
+```
+
+On first start, the agent generates a local `node_id` and token in `state_path`, then asks the VPS to join with `join_code`. Go back to the Web UI node table, approve the node, choose role `server`, set interface `wg0`, and select the real node type, `openwrt` or `linux`.
+
 `stop_wireguard: true` is important because Natter must bind the same local port as WireGuard. The agent stops the interface, obtains the mapping, then starts the interface again.
 
 Supported `wireguard_control_method` values:
@@ -346,22 +314,16 @@ Supported `wireguard_control_method` values:
 - `wg-quick`: `wg-quick down wg0` / `wg-quick up wg0`
 - `systemd`: `systemctl stop wg-quick@wg0` / `systemctl start wg-quick@wg0`
 
-Start the agent:
-
-```sh
-./wgnh agent --config /etc/wgnh/agent.json
-```
-
-## 5. Configure client agents
+## 4. Configure client agents
 
 Example `/etc/wgnh/agent.json` on `office-b`:
 
 ```json
 {
-  "node_id": "office-b",
   "daemon_addr": "your-vps.example.com:3333",
-  "token": "token-for-office-b",
-  "role": "client",
+  "join_code": "replace-with-domain-join-code",
+  "node_name": "office-b",
+  "state_path": "/etc/wgnh/node-state.json",
   "retry_seconds": 5,
   "dry_run": false,
   "wireguard": [
@@ -379,51 +341,35 @@ Example `/etc/wgnh/agent.json` on `office-b`:
 }
 ```
 
-Use `"dry_run": true` for the first test if you want to verify the flow without modifying local config.
-
-Monitoring flow:
-
-1. The client agent runs `wg show wg0 latest-handshakes`.
-2. A stale peer is reported to the daemon after `fail_threshold` failures.
-3. The daemon finds the matching binding.
-4. The daemon sends `natter.run` to the server node.
-5. The server reports a new endpoint.
-6. The daemon sends `endpoint.apply` to the client node.
-
 Start the agent:
 
 ```sh
 ./wgnh agent --config /etc/wgnh/agent.json
 ```
 
-## 6. Use the Web UI
+Go back to the Web UI, approve the node, choose role `client`, and set interface `wg0`. Use `"dry_run": true` for the first test if you want to verify the flow without modifying local config.
 
-Run locally:
+## 5. Automatic binding creation
 
-```sh
-./wgnh web --addr 127.0.0.1:9090
-```
+After the server and client are both approved, the daemon creates bindings automatically from the WireGuard inventory reported by agents. The match rule is: inside the same domain, a `server` node WireGuard public key appears in a `client` node peer list.
 
-Or run it in Docker:
+In the Web UI, check:
 
-```sh
-docker run --rm -p 9090:9090 wgnh:local web --addr 0.0.0.0:9090
-```
+- `WireGuard auto discovery`: whether nodes reported interfaces, public keys, and peers.
+- `WireGuard bindings`: whether the binding was created.
+- `Recent events`: look for `binding.auto_created` or errors.
 
-Open `http://127.0.0.1:9090`, enter:
+If no binding appears, the client `[Peer] PublicKey` is usually not the server public key, or the agent system cannot run `wg show`.
 
-- daemon TCP address: `your-vps.example.com:3333`
-- admin token: the value passed to `wgnh daemon serve --admin-token`
+## 6. Endpoint update flow
 
-The browser stores both values in local storage. Any browser that can reach the Web UI can open the page, but it still needs the admin token to connect to the daemon.
-
-The Web UI can:
-
-- show node online status
-- show bindings and current endpoints
-- show recent events and payloads
-- manually trigger Natter for a server/interface
-- auto-refresh every 15 seconds after a successful connection
+1. The client agent runs `wg show wg0 latest-handshakes`.
+2. A stale peer is reported to the daemon after `fail_threshold` failures.
+3. The daemon finds the automatic binding.
+4. The daemon sends `natter.run` to the server node.
+5. The server agent stops WireGuard, runs Natter, starts WireGuard, and reports the new public endpoint.
+6. The daemon sends `endpoint.apply` to the client node.
+7. The client agent updates the local WireGuard endpoint and reloads the interface as configured.
 
 ## 7. Trigger Natter from CLI
 
@@ -438,16 +384,37 @@ The Web UI can:
 ## 8. Query state from CLI
 
 ```sh
+./wgnh daemon domains --addr your-vps.example.com:3333 --admin-token "$ADMIN_TOKEN"
 ./wgnh daemon nodes --addr your-vps.example.com:3333 --admin-token "$ADMIN_TOKEN"
+./wgnh daemon wireguard --addr your-vps.example.com:3333 --admin-token "$ADMIN_TOKEN"
 ./wgnh daemon bindings --addr your-vps.example.com:3333 --admin-token "$ADMIN_TOKEN"
 ./wgnh daemon events --addr your-vps.example.com:3333 --admin-token "$ADMIN_TOKEN"
 ```
+
+## Manual add-binding is still available
+
+If automatic binding does not fit your topology, you can still create a binding manually:
+
+```sh
+./wgnh daemon add-binding \
+  --state /etc/wgnh/state.json \
+  --id home-a-wg0-office-b \
+  --server-node home-a \
+  --server-interface wg0 \
+  --client-node office-b \
+  --client-interface wg0 \
+  --peer-public-key 'A_SERVER_PUBLIC_KEY' \
+  --config-type openwrt_uci \
+  --reload-method ifup
+```
+
+`--peer-public-key` is the server peer public key inside the client config, not the client's own key.
 
 ## Troubleshooting
 
 ### `invalid node credentials`
 
-Check `node_id`, token, and the daemon `--state` file. Running `daemon create-node` again for the same node rotates the token, so the agent config must be updated.
+With join-code enrollment, check that the agent `state_path` file still exists; it stores the generated `node_id` and token. If that file is deleted, the agent creates a new identity and must be approved again in the Web UI. Also confirm the daemon is using the expected `--state` file.
 
 ### `connection reset by peer`
 
