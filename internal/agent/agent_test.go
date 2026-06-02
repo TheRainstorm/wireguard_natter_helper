@@ -52,3 +52,16 @@ func TestParseLatestHandshakes(t *testing.T) {
 		t.Fatalf("unexpected peer-b timestamp: %d", got["peer-b"])
 	}
 }
+
+func TestParseWhitespaceList(t *testing.T) {
+	got := parseWhitespaceList("wg0 wg1\nwg2\t\n")
+	want := []string{"wg0", "wg1", "wg2"}
+	if len(got) != len(want) {
+		t.Fatalf("unexpected length: %#v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("unexpected item %d: got %q want %q", i, got[i], want[i])
+		}
+	}
+}

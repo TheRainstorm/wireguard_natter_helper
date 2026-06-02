@@ -50,3 +50,84 @@ func TestDisplayStatusMarksStaleNodeOffline(t *testing.T) {
 		t.Fatalf("expected offline, got %s", got)
 	}
 }
+
+func TestReconcileAutoBindingsCreatesClientEndpointBinding(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateDomain("home", "Home", "join-home", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.UpsertJoinedNode("home", "server-a", "Server A", "server-token", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.UpsertJoinedNode("home", "client-b", "Client B", "client-token", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ApproveNode("server-a", NodeApproval{Role: "server", Interface: "wg0", ConfigType: "wg_conf", ReloadMethod: "wg-quick-restart"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ApproveNode("client-b", NodeApproval{Role: "client", Interface: "wg0", ConfigType: "openwrt_uci", ReloadMethod: "ifup"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpdateWGInterfaces("server-a", []WGInterface{{
+		Name:      "wg0",
+		PublicKey: "server-public-key",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpdateWGInterfaces("client-b", []WGInterface{{
+		Name:       "wg0",
+		PublicKey:  "client-public-key",
+		Peers:      []string{"server-public-key"},
+		ConfigType: "openwrt_uci",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := st.ReconcileAutoBindings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(created) != 1 {
+		t.Fatalf("expected one binding, got %#v", created)
+	}
+	binding := created[0]
+	if binding.ServerNodeID != "server-a" || binding.ClientNodeID != "client-b" || binding.PeerPublicKey != "server-public-key" {
+		t.Fatalf("unexpected binding: %#v", binding)
+	}
+	if binding.ConfigType != "openwrt_uci" || binding.ReloadMethod != "ifup" {
+		t.Fatalf("unexpected client config fields: %#v", binding)
+	}
+
+	created, err = st.ReconcileAutoBindings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(created) != 0 {
+		t.Fatalf("expected idempotent reconcile, got %#v", created)
+	}
+}
+
+func TestApproveNodeDefaultsRuntimeFieldsByNodeType(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateDomain("home", "Home", "join-home", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.UpsertJoinedNode("home", "router", "Router", "router-token", nil); err != nil {
+		t.Fatal(err)
+	}
+	node, err := st.ApproveNode("router", NodeApproval{Role: "client", NodeType: "openwrt", Interface: "wg0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.ConfigType != "openwrt_uci" || node.ReloadMethod != "ifup" {
+		t.Fatalf("unexpected openwrt defaults: %#v", node)
+	}
+}

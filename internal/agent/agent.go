@@ -43,6 +43,7 @@ type WGInterface struct {
 	Name            string `json:"name"`
 	ListenPort      int    `json:"listen_port"`
 	ConfigType      string `json:"config_type"`
+	ConfigPath      string `json:"config_path"`
 	WGControlMethod string `json:"wireguard_control_method"`
 }
 
@@ -341,7 +342,59 @@ func (a *Agent) poll(ctx context.Context) (*protocol.Command, error) {
 }
 
 func (a *Agent) meta() map[string]any {
-	return map[string]any{"platform": runtime.GOOS + "/" + runtime.GOARCH, "agent_version": protocol.Version}
+	meta := map[string]any{"platform": runtime.GOOS + "/" + runtime.GOARCH, "agent_version": protocol.Version}
+	if inventory := a.wireGuardInventory(); len(inventory) > 0 {
+		meta["wireguard"] = inventory
+	}
+	return meta
+}
+
+func (a *Agent) wireGuardInventory() []map[string]any {
+	configured := map[string]WGInterface{}
+	var names []string
+	for _, item := range a.config.WireGuard {
+		if item.Name == "" {
+			continue
+		}
+		configured[item.Name] = item
+		names = append(names, item.Name)
+	}
+	if len(names) == 0 {
+		discovered, err := wgInterfaces()
+		if err != nil {
+			return nil
+		}
+		names = discovered
+	}
+	var out []map[string]any
+	for _, name := range names {
+		item := configured[name]
+		publicKey, err := wgShowString(name, "public-key")
+		if err != nil || publicKey == "" {
+			continue
+		}
+		listenPort := item.ListenPort
+		if listenPort <= 0 {
+			listenPort, _ = wgShowInt(name, "listen-port")
+		}
+		peers, _ := wgPeers(name)
+		payload := map[string]any{
+			"name":       name,
+			"public_key": publicKey,
+			"peers":      peers,
+		}
+		if listenPort > 0 {
+			payload["listen_port"] = listenPort
+		}
+		if item.ConfigType != "" {
+			payload["config_type"] = item.ConfigType
+		}
+		if item.ConfigPath != "" {
+			payload["config_path"] = item.ConfigPath
+		}
+		out = append(out, payload)
+	}
+	return out
 }
 
 func (a *Agent) setMonitorPeers(peers []rpc.MonitorPeer) {
@@ -590,6 +643,55 @@ func latestHandshakes(interfaceName string) (map[string]int64, error) {
 		return nil, fmt.Errorf("wg show %s latest-handshakes failed: %w", interfaceName, err)
 	}
 	return ParseLatestHandshakes(string(out))
+}
+
+func wgInterfaces() ([]string, error) {
+	out, err := exec.Command("wg", "show", "interfaces").Output()
+	if err != nil {
+		return nil, fmt.Errorf("wg show interfaces failed: %w", err)
+	}
+	return parseWhitespaceList(string(out)), nil
+}
+
+func wgPeers(interfaceName string) ([]string, error) {
+	out, err := exec.Command("wg", "show", interfaceName, "peers").Output()
+	if err != nil {
+		return nil, fmt.Errorf("wg show %s peers failed: %w", interfaceName, err)
+	}
+	return parseWhitespaceList(string(out)), nil
+}
+
+func wgShowString(interfaceName, field string) (string, error) {
+	out, err := exec.Command("wg", "show", interfaceName, field).Output()
+	if err != nil {
+		return "", fmt.Errorf("wg show %s %s failed: %w", interfaceName, field, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func wgShowInt(interfaceName, field string) (int, error) {
+	value, err := wgShowString(interfaceName, field)
+	if err != nil {
+		return 0, err
+	}
+	if value == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("invalid wg show %s %s value %q: %w", interfaceName, field, value, err)
+	}
+	return n, nil
+}
+
+func parseWhitespaceList(raw string) []string {
+	var out []string
+	for _, item := range strings.Fields(raw) {
+		if item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 func ParseLatestHandshakes(raw string) (map[string]int64, error) {

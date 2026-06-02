@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sync"
 	"time"
 
@@ -22,6 +23,7 @@ type Data struct {
 	Nodes          map[string]Node            `json:"nodes"`
 	Domains        map[string]Domain          `json:"domains"`
 	Bindings       map[string]Binding         `json:"bindings"`
+	WGInterfaces   map[string]WGInterface     `json:"wireguard_interfaces"`
 	EndpointLeases []EndpointLease            `json:"endpoint_leases"`
 	Commands       map[string][]QueuedCommand `json:"commands"`
 	Events         []Event                    `json:"events"`
@@ -65,6 +67,17 @@ type Binding struct {
 	EndpointHost    string `json:"endpoint_host"`
 	EndpointPort    int    `json:"endpoint_port"`
 	Enabled         bool   `json:"enabled"`
+}
+
+type WGInterface struct {
+	NodeID     string   `json:"node_id"`
+	Name       string   `json:"name"`
+	PublicKey  string   `json:"public_key,omitempty"`
+	ListenPort int      `json:"listen_port,omitempty"`
+	Peers      []string `json:"peers,omitempty"`
+	ConfigType string   `json:"config_type,omitempty"`
+	ConfigPath string   `json:"config_path,omitempty"`
+	UpdatedAt  string   `json:"updated_at"`
 }
 
 type EndpointLease struct {
@@ -118,11 +131,12 @@ func Open(path string) (*Store, error) {
 
 func newData() Data {
 	return Data{
-		Nodes:    map[string]Node{},
-		Domains:  map[string]Domain{},
-		Bindings: map[string]Binding{},
-		Commands: map[string][]QueuedCommand{},
-		Events:   []Event{},
+		Nodes:        map[string]Node{},
+		Domains:      map[string]Domain{},
+		Bindings:     map[string]Binding{},
+		WGInterfaces: map[string]WGInterface{},
+		Commands:     map[string][]QueuedCommand{},
+		Events:       []Event{},
 	}
 }
 
@@ -135,6 +149,9 @@ func (s *Store) ensureMaps() {
 	}
 	if s.data.Bindings == nil {
 		s.data.Bindings = map[string]Binding{}
+	}
+	if s.data.WGInterfaces == nil {
+		s.data.WGInterfaces = map[string]WGInterface{}
 	}
 	if s.data.Commands == nil {
 		s.data.Commands = map[string][]QueuedCommand{}
@@ -259,8 +276,10 @@ func (s *Store) UpsertJoinedNode(domainID, nodeID, name, token string, meta map[
 			existing.DomainID = domainID
 		}
 		existing.LastSeenAt = protocol.NowISO()
-		existing.Platform, _ = meta["platform"].(string)
-		existing.AgentVersion, _ = meta["agent_version"].(string)
+		if meta != nil {
+			existing.Platform, _ = meta["platform"].(string)
+			existing.AgentVersion, _ = meta["agent_version"].(string)
+		}
 		s.data.Nodes[nodeID] = existing
 		return existing, false, s.saveLocked()
 	}
@@ -276,8 +295,10 @@ func (s *Store) UpsertJoinedNode(domainID, nodeID, name, token string, meta map[
 	if node.Name == "" {
 		node.Name = node.ID
 	}
-	node.Platform, _ = meta["platform"].(string)
-	node.AgentVersion, _ = meta["agent_version"].(string)
+	if meta != nil {
+		node.Platform, _ = meta["platform"].(string)
+		node.AgentVersion, _ = meta["agent_version"].(string)
+	}
 	s.data.Nodes[node.ID] = node
 	s.addEventLocked("node.joined", "info", node.ID, "", "Node joined and is pending approval", map[string]any{"domain_id": domainID})
 	return node, true, s.saveLocked()
@@ -327,6 +348,7 @@ func (s *Store) ApproveNode(nodeID string, approval NodeApproval) (Node, error) 
 	if approval.ReloadMethod != "" {
 		node.ReloadMethod = approval.ReloadMethod
 	}
+	defaultNodeRuntimeFields(&node)
 	node.Approved = true
 	if node.Status == "pending" {
 		node.Status = "offline"
@@ -339,16 +361,105 @@ func (s *Store) ApproveNode(nodeID string, approval NodeApproval) (Node, error) 
 func (s *Store) AddBinding(b Binding) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if b.ConfigType == "" {
-		b.ConfigType = "openwrt_uci"
-	}
-	if b.ReloadMethod == "" {
-		b.ReloadMethod = "none"
-	}
+	defaultBindingFields(&b)
 	b.Enabled = true
 	s.data.Bindings[b.ID] = b
 	s.addEventLocked("binding.upserted", "info", "", b.ID, "Binding saved", nil)
 	return s.saveLocked()
+}
+
+func (s *Store) UpdateWGInterfaces(nodeID string, interfaces []WGInterface) error {
+	if nodeID == "" || len(interfaces) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := protocol.NowISO()
+	for key, item := range s.data.WGInterfaces {
+		if item.NodeID == nodeID {
+			delete(s.data.WGInterfaces, key)
+		}
+	}
+	for _, item := range interfaces {
+		if item.Name == "" {
+			continue
+		}
+		item.NodeID = nodeID
+		item.UpdatedAt = now
+		s.data.WGInterfaces[wgInterfaceKey(nodeID, item.Name)] = item
+	}
+	return s.saveLocked()
+}
+
+func (s *Store) WGInterfaces() []WGInterface {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]WGInterface, 0, len(s.data.WGInterfaces))
+	for _, item := range s.data.WGInterfaces {
+		out = append(out, item)
+	}
+	return out
+}
+
+func (s *Store) ReconcileAutoBindings() ([]Binding, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var created []Binding
+	nodesByDomain := map[string][]Node{}
+	for _, node := range s.data.Nodes {
+		if node.Approved && node.DomainID != "" {
+			nodesByDomain[node.DomainID] = append(nodesByDomain[node.DomainID], node)
+		}
+	}
+	for domainID, nodes := range nodesByDomain {
+		for _, server := range nodes {
+			if server.Role != "server" {
+				continue
+			}
+			serverIfaces := s.interfacesForNodeLocked(server.ID, server.Interface)
+			for _, client := range nodes {
+				if client.ID == server.ID || client.Role != "client" {
+					continue
+				}
+				clientIfaces := s.interfacesForNodeLocked(client.ID, client.Interface)
+				for _, serverIface := range serverIfaces {
+					if serverIface.PublicKey == "" {
+						continue
+					}
+					for _, clientIface := range clientIfaces {
+						if !containsString(clientIface.Peers, serverIface.PublicKey) {
+							continue
+						}
+						if s.bindingExistsLocked(server.ID, serverIface.Name, client.ID, clientIface.Name, serverIface.PublicKey) {
+							continue
+						}
+						b := Binding{
+							ID:              autoBindingID(domainID, server.ID, serverIface.Name, client.ID, clientIface.Name),
+							ServerNodeID:    server.ID,
+							ServerInterface: serverIface.Name,
+							ClientNodeID:    client.ID,
+							ClientInterface: clientIface.Name,
+							PeerPublicKey:   serverIface.PublicKey,
+							ConfigType:      firstNonEmpty(client.ConfigType, clientIface.ConfigType),
+							ConfigPath:      clientIface.ConfigPath,
+							ReloadMethod:    client.ReloadMethod,
+							Enabled:         true,
+						}
+						defaultBindingFields(&b)
+						s.data.Bindings[b.ID] = b
+						s.addEventLocked("binding.auto_created", "info", "", b.ID, "Binding auto-created from WireGuard inventory", map[string]any{
+							"domain_id": domainID,
+						})
+						created = append(created, b)
+					}
+				}
+			}
+		}
+	}
+	if len(created) == 0 {
+		return nil, nil
+	}
+	return created, s.saveLocked()
 }
 
 func (s *Store) QueueCommand(nodeID string, cmd protocol.Command) error {
@@ -463,6 +574,99 @@ func (s *Store) AddEvent(eventType, severity, nodeID, bindingID, message string,
 	defer s.mu.Unlock()
 	s.addEventLocked(eventType, severity, nodeID, bindingID, message, payload)
 	return s.saveLocked()
+}
+
+func (s *Store) interfacesForNodeLocked(nodeID, preferredName string) []WGInterface {
+	var out []WGInterface
+	for _, item := range s.data.WGInterfaces {
+		if item.NodeID != nodeID {
+			continue
+		}
+		if preferredName != "" && item.Name != preferredName {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func (s *Store) bindingExistsLocked(serverNodeID, serverInterface, clientNodeID, clientInterface, peerPublicKey string) bool {
+	for _, b := range s.data.Bindings {
+		if b.ServerNodeID == serverNodeID &&
+			b.ServerInterface == serverInterface &&
+			b.ClientNodeID == clientNodeID &&
+			b.ClientInterface == clientInterface &&
+			b.PeerPublicKey == peerPublicKey {
+			return true
+		}
+	}
+	return false
+}
+
+func defaultBindingFields(b *Binding) {
+	if b.ConfigType == "" {
+		b.ConfigType = "openwrt_uci"
+	}
+	if b.ReloadMethod == "" {
+		b.ReloadMethod = "none"
+	}
+}
+
+func defaultNodeRuntimeFields(node *Node) {
+	switch node.NodeType {
+	case "openwrt":
+		if node.ConfigType == "" {
+			node.ConfigType = "openwrt_uci"
+		}
+		if node.ReloadMethod == "" {
+			node.ReloadMethod = "ifup"
+		}
+	case "linux":
+		if node.ConfigType == "" {
+			node.ConfigType = "wg_conf"
+		}
+		if node.ReloadMethod == "" {
+			node.ReloadMethod = "wg-quick-restart"
+		}
+	}
+}
+
+func autoBindingID(domainID, serverNodeID, serverInterface, clientNodeID, clientInterface string) string {
+	return cleanID(domainID + "-" + serverNodeID + "-" + serverInterface + "-to-" + clientNodeID + "-" + clientInterface)
+}
+
+func wgInterfaceKey(nodeID, name string) string {
+	return nodeID + "/" + name
+}
+
+var cleanIDRe = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)
+
+func cleanID(value string) string {
+	value = cleanIDRe.ReplaceAllString(value, "-")
+	value = regexp.MustCompile(`-+`).ReplaceAllString(value, "-")
+	value = regexp.MustCompile(`(^-|-$)`).ReplaceAllString(value, "")
+	if value == "" {
+		return "binding"
+	}
+	return value
+}
+
+func containsString(values []string, needle string) bool {
+	for _, value := range values {
+		if value == needle {
+			return true
+		}
+	}
+	return false
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (s *Store) addEventLocked(eventType, severity, nodeID, bindingID, message string, payload map[string]any) {

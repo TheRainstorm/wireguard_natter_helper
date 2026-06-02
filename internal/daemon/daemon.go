@@ -139,6 +139,8 @@ func (s *Server) agentJoin(req rpc.Request, remote string) rpc.Response {
 	} else {
 		log.Printf("node join refreshed node=%s domain=%s approved=%t remote=%s", node.ID, domain.ID, node.Approved, remote)
 	}
+	s.syncWireGuardInventory(req.NodeID, req.Meta)
+	s.reconcileAutoBindings()
 	return rpc.Response{OK: true, Approved: node.Approved, Domain: &domain, Nodes: []store.Node{sanitizeNode(node)}}
 }
 
@@ -148,6 +150,8 @@ func (s *Server) agentPoll(req rpc.Request, remote string) rpc.Response {
 		return rpc.Response{OK: false, Error: err.Error()}
 	}
 	_ = s.store.MarkSeen(nodeID, req.Meta)
+	s.syncWireGuardInventory(nodeID, req.Meta)
+	s.reconcileAutoBindings()
 
 	var cmd *protocol.Command
 	deadline := time.Now().Add(s.pollWait)
@@ -212,8 +216,32 @@ func (s *Server) adminApproveNode(req rpc.Request) rpc.Response {
 		return rpc.Response{OK: false, Error: err.Error()}
 	}
 	log.Printf("node approved node=%s domain=%s role=%s type=%s interface=%s", node.ID, node.DomainID, node.Role, node.NodeType, node.Interface)
+	s.reconcileAutoBindings()
 	clean := sanitizeNode(node)
 	return rpc.Response{OK: true, Approved: true, Nodes: []store.Node{clean}}
+}
+
+func (s *Server) syncWireGuardInventory(nodeID string, meta map[string]any) {
+	interfaces := wireGuardInventoryFromMeta(nodeID, meta)
+	if len(interfaces) == 0 {
+		return
+	}
+	if err := s.store.UpdateWGInterfaces(nodeID, interfaces); err != nil {
+		log.Printf("wireguard inventory update failed node=%s error=%v", nodeID, err)
+		return
+	}
+	log.Printf("wireguard inventory updated node=%s interfaces=%d", nodeID, len(interfaces))
+}
+
+func (s *Server) reconcileAutoBindings() {
+	created, err := s.store.ReconcileAutoBindings()
+	if err != nil {
+		log.Printf("auto binding reconcile failed: %v", err)
+		return
+	}
+	for _, binding := range created {
+		log.Printf("auto binding created id=%s server=%s/%s client=%s/%s", binding.ID, binding.ServerNodeID, binding.ServerInterface, binding.ClientNodeID, binding.ClientInterface)
+	}
 }
 
 func (s *Server) monitorPeersForNode(nodeID string) []rpc.MonitorPeer {
@@ -379,9 +407,56 @@ func leaseFromPayload(payload map[string]any) (store.EndpointLease, error) {
 	return lease, nil
 }
 
+func wireGuardInventoryFromMeta(nodeID string, meta map[string]any) []store.WGInterface {
+	raw, ok := meta["wireguard"]
+	if !ok {
+		return nil
+	}
+	items, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	var out []store.WGInterface
+	for _, item := range items {
+		obj, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		name := stringValue(obj["name"])
+		if name == "" {
+			continue
+		}
+		listenPort, _ := number(obj["listen_port"])
+		out = append(out, store.WGInterface{
+			NodeID:     nodeID,
+			Name:       name,
+			PublicKey:  stringValue(obj["public_key"]),
+			ListenPort: listenPort,
+			Peers:      stringSlice(obj["peers"]),
+			ConfigType: stringValue(obj["config_type"]),
+			ConfigPath: stringValue(obj["config_path"]),
+		})
+	}
+	return out
+}
+
 func stringValue(v any) string {
 	s, _ := v.(string)
 	return s
+}
+
+func stringSlice(v any) []string {
+	values, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	var out []string
+	for _, item := range values {
+		if value := stringValue(item); value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func number(v any) (int, error) {
