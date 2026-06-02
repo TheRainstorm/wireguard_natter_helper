@@ -72,17 +72,22 @@ local function binding_has_endpoint(binding)
 	return binding and binding.endpoint_host and binding.endpoint_host ~= "" and tonumber(binding.endpoint_port or 0) > 0
 end
 
-local function build_stats(nodes, bindings, events)
+local function build_stats(nodes, bindings, events, wireguard)
 	local stats = {
 		nodes = #nodes,
 		online = 0,
+		pending = 0,
 		bindings = #bindings,
+		interfaces = #wireguard,
 		with_endpoint = 0,
 		errors = 0
 	}
 	for _, node in ipairs(nodes) do
 		if node.status == "online" then
 			stats.online = stats.online + 1
+		end
+		if node.approved == false or node.status == "pending" then
+			stats.pending = stats.pending + 1
 		end
 	end
 	for _, binding in ipairs(bindings) do
@@ -123,6 +128,11 @@ function api_summary()
 		write_json({ ok = false, error = "load bindings: " .. bindings_err })
 		return
 	end
+	local wg_resp, wg_err = admin_call("wireguard")
+	if not wg_resp then
+		write_json({ ok = false, error = "load wireguard inventory: " .. wg_err })
+		return
+	end
 	local events_resp, events_err = admin_call("events", " --limit=80")
 	if not events_resp then
 		write_json({ ok = false, error = "load events: " .. events_err })
@@ -132,6 +142,7 @@ function api_summary()
 	local _, addr = daemon_config()
 	local nodes = nodes_resp.nodes or {}
 	local bindings = bindings_resp.bindings or {}
+	local wireguard = wg_resp.wireguard_interfaces or {}
 	local events = events_resp.events or {}
 
 	write_json({
@@ -141,8 +152,9 @@ function api_summary()
 			generated_at = os.date("%Y-%m-%d %H:%M:%S"),
 			nodes = nodes,
 			bindings = bindings,
+			wireguard_interfaces = wireguard,
 			events = events,
-			stats = build_stats(nodes, bindings, events)
+			stats = build_stats(nodes, bindings, events, wireguard)
 		}
 	})
 end

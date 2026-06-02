@@ -25,7 +25,7 @@
   }
   .wgnh-stats {
     display: grid;
-    grid-template-columns: repeat(5, minmax(120px, 1fr));
+    grid-template-columns: repeat(7, minmax(110px, 1fr));
     gap: 12px;
   }
   .wgnh-stat,
@@ -159,6 +159,8 @@
   <div class="wgnh-stats">
     <div class="wgnh-stat"><div class="wgnh-label"><%:Nodes%></div><div id="wgnh-stat-nodes" class="wgnh-value">-</div></div>
     <div class="wgnh-stat"><div class="wgnh-label"><%:Online nodes%></div><div id="wgnh-stat-online" class="wgnh-value">-</div></div>
+    <div class="wgnh-stat"><div class="wgnh-label"><%:Pending%></div><div id="wgnh-stat-pending" class="wgnh-value">-</div></div>
+    <div class="wgnh-stat"><div class="wgnh-label"><%:WG interfaces%></div><div id="wgnh-stat-interfaces" class="wgnh-value">-</div></div>
     <div class="wgnh-stat"><div class="wgnh-label"><%:Bindings%></div><div id="wgnh-stat-bindings" class="wgnh-value">-</div></div>
     <div class="wgnh-stat"><div class="wgnh-label"><%:Endpoints%></div><div id="wgnh-stat-endpoints" class="wgnh-value">-</div></div>
     <div class="wgnh-stat"><div class="wgnh-label"><%:Error events%></div><div id="wgnh-stat-errors" class="wgnh-value">-</div></div>
@@ -180,8 +182,19 @@
     <div class="wgnh-help"><%:This section comes from the configured daemon address. It shows all nodes known by the daemon, not only this router.%></div>
     <div class="wgnh-scroll">
       <table class="wgnh-table">
-        <thead><tr><th><%:Node%></th><th><%:Role%></th><th><%:Status%></th><th><%:Platform%></th><th><%:Version%></th><th><%:Last seen%></th></tr></thead>
-        <tbody id="wgnh-nodes"><tr><td colspan="6" class="wgnh-empty"><%:No data loaded%></td></tr></tbody>
+        <thead><tr><th><%:Node%></th><th><%:Domain%></th><th><%:Role%></th><th><%:Status%></th><th><%:Interface%></th><th><%:Platform%></th><th><%:Last seen%></th></tr></thead>
+        <tbody id="wgnh-nodes"><tr><td colspan="7" class="wgnh-empty"><%:No data loaded%></td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="wgnh-panel">
+    <div class="wgnh-panel-head"><%:Remote daemon WireGuard inventory%></div>
+    <div class="wgnh-help"><%:Automatic bindings are created when a server public key appears in a client peer list in the same domain.%></div>
+    <div class="wgnh-scroll">
+      <table class="wgnh-table">
+        <thead><tr><th><%:Node%></th><th><%:Interface%></th><th><%:Public key%></th><th><%:Listen%></th><th><%:Peers%></th><th><%:Config%></th><th><%:Updated%></th></tr></thead>
+        <tbody id="wgnh-wireguard"><tr><td colspan="7" class="wgnh-empty"><%:No data loaded%></td></tr></tbody>
       </table>
     </div>
   </div>
@@ -281,10 +294,13 @@
     document.getElementById('wgnh-subtitle').innerHTML = 'daemon <span class="wgnh-code">' + esc(data.daemon_addr) + '</span> · ' + esc(data.generated_at) + ' · <%:Auto refresh 15s%>';
     document.getElementById('wgnh-stat-nodes').textContent = data.stats.nodes;
     document.getElementById('wgnh-stat-online').textContent = data.stats.online;
+    document.getElementById('wgnh-stat-pending').textContent = data.stats.pending;
+    document.getElementById('wgnh-stat-interfaces').textContent = data.stats.interfaces;
     document.getElementById('wgnh-stat-bindings').textContent = data.stats.bindings;
     document.getElementById('wgnh-stat-endpoints').textContent = data.stats.with_endpoint;
     document.getElementById('wgnh-stat-errors').textContent = data.stats.errors;
     renderNodes(data.nodes || []);
+    renderWireGuard(data.wireguard_interfaces || []);
     renderBindings(data.bindings || []);
     renderEvents(data.events || []);
   }
@@ -307,17 +323,40 @@
   function renderNodes(nodes) {
     var body = document.getElementById('wgnh-nodes');
     if (!nodes.length) {
-      body.innerHTML = '<tr><td colspan="6" class="wgnh-empty"><%:No nodes%></td></tr>';
+      body.innerHTML = '<tr><td colspan="7" class="wgnh-empty"><%:No nodes%></td></tr>';
       return;
     }
     body.innerHTML = nodes.map(function(node) {
       return '<tr>'
         + '<td><span class="wgnh-code">' + esc(node.id) + '</span></td>'
+        + '<td><span class="wgnh-code">' + esc(node.domain_id || '-') + '</span></td>'
         + '<td>' + esc(node.role) + '</td>'
-        + '<td><span class="wgnh-badge wgnh-' + attr(node.status) + '">' + esc(node.status) + '</span></td>'
+        + '<td><span class="wgnh-badge wgnh-' + attr(node.status) + '">' + esc(node.status) + '</span> ' + (node.approved ? '<span class="wgnh-badge wgnh-online">approved</span>' : '<span class="wgnh-badge"><%:pending%></span>') + '</td>'
+        + '<td><span class="wgnh-code">' + esc(node.interface || '-') + '</span><br>' + esc((node.config_type || '') + ' ' + (node.reload_method || '')) + '</td>'
         + '<td>' + esc(node.platform) + '</td>'
-        + '<td>' + esc(node.agent_version) + '</td>'
         + '<td>' + esc(node.last_seen_at) + '</td>'
+        + '</tr>';
+    }).join('');
+  }
+
+  function renderWireGuard(items) {
+    var body = document.getElementById('wgnh-wireguard');
+    if (!items.length) {
+      body.innerHTML = '<tr><td colspan="7" class="wgnh-empty"><%:No WireGuard inventory%></td></tr>';
+      return;
+    }
+    body.innerHTML = items.map(function(item) {
+      var peers = (item.peers || []).map(function(peer) {
+        return '<span class="wgnh-code">' + esc(shortKey(peer)) + '</span>';
+      }).join(' ');
+      return '<tr>'
+        + '<td><span class="wgnh-code">' + esc(item.node_id) + '</span></td>'
+        + '<td><span class="wgnh-code">' + esc(item.name) + '</span></td>'
+        + '<td><span class="wgnh-code">' + esc(shortKey(item.public_key || '')) + '</span></td>'
+        + '<td>' + esc(item.listen_port || '-') + '</td>'
+        + '<td class="wgnh-wrap">' + (peers || '<span class="text-muted"><%:No peers%></span>') + '</td>'
+        + '<td><span class="wgnh-badge">' + esc(item.config_type || 'runtime') + '</span> ' + esc(item.config_path || '') + '</td>'
+        + '<td>' + esc(item.updated_at || '-') + '</td>'
         + '</tr>';
     }).join('');
   }
@@ -391,6 +430,12 @@
 
   function attr(value) {
     return esc(value).replace(/[^a-zA-Z0-9_-]/g, '');
+  }
+
+  function shortKey(value) {
+    value = String(value || '');
+    if (value.length <= 14) return value;
+    return value.slice(0, 7) + '...' + value.slice(-6);
   }
 })();
 </script>
