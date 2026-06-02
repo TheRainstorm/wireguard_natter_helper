@@ -3,6 +3,8 @@ package agent
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,10 +24,13 @@ import (
 
 type Config struct {
 	NodeID       string        `json:"node_id"`
+	NodeName     string        `json:"node_name"`
 	DaemonAddr   string        `json:"daemon_addr"`
 	DaemonURL    string        `json:"daemon_url"`
 	Token        string        `json:"token"`
 	TokenFile    string        `json:"token_file"`
+	JoinCode     string        `json:"join_code"`
+	StatePath    string        `json:"state_path"`
 	Role         string        `json:"role"`
 	RetrySeconds int           `json:"retry_seconds"`
 	DryRun       bool          `json:"dry_run"`
@@ -69,8 +74,14 @@ type Agent struct {
 	config       Config
 	token        string
 	addr         string
+	joined       bool
 	monitorMu    sync.RWMutex
 	monitorPeers []MonitorPeer
+}
+
+type LocalState struct {
+	NodeID string `json:"node_id"`
+	Token  string `json:"token"`
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -89,6 +100,9 @@ func LoadConfig(path string) (Config, error) {
 }
 
 func New(cfg Config) (*Agent, error) {
+	if cfg.StatePath == "" {
+		cfg.StatePath = "/etc/wgnh/node-state.json"
+	}
 	token := cfg.Token
 	if token == "" && cfg.TokenFile != "" {
 		raw, err := os.ReadFile(cfg.TokenFile)
@@ -96,6 +110,18 @@ func New(cfg Config) (*Agent, error) {
 			return nil, err
 		}
 		token = string(bytes.TrimSpace(raw))
+	}
+	if (cfg.NodeID == "" || token == "") && cfg.JoinCode != "" {
+		state, err := loadOrCreateLocalState(cfg.StatePath)
+		if err != nil {
+			return nil, err
+		}
+		if cfg.NodeID == "" {
+			cfg.NodeID = state.NodeID
+		}
+		if token == "" {
+			token = state.Token
+		}
 	}
 	addr := cfg.DaemonAddr
 	if addr == "" {
@@ -106,7 +132,7 @@ func New(cfg Config) (*Agent, error) {
 		return nil, err
 	}
 	if cfg.NodeID == "" || addr == "" || token == "" {
-		return nil, errors.New("node_id, daemon_addr and token/token_file are required")
+		return nil, errors.New("node_id, daemon_addr and token/token_file are required; or set join_code for bootstrap enrollment")
 	}
 	return &Agent{config: cfg, token: token, addr: addr, monitorPeers: cfg.Monitor.Peers}, nil
 }
@@ -121,8 +147,35 @@ func (a *Agent) Run(ctx context.Context) error {
 			return ctx.Err()
 		default:
 		}
+		if a.config.JoinCode != "" && !a.joined {
+			if joinErr := a.join(ctx); joinErr != nil {
+				if strings.Contains(joinErr.Error(), "node pending approval") {
+					fmt.Fprintf(os.Stderr, "agent pending approval: node_id=%s\n", a.config.NodeID)
+				} else {
+					fmt.Fprintf(os.Stderr, "agent join error: %v\n", joinErr)
+				}
+				time.Sleep(time.Duration(a.config.RetrySeconds) * time.Second)
+				continue
+			}
+			log.Printf("agent joined and approved node_id=%s", a.config.NodeID)
+		}
 		cmd, err := a.poll(ctx)
 		if err != nil {
+			if a.config.JoinCode != "" && strings.Contains(err.Error(), "node pending approval") {
+				if joinErr := a.join(ctx); joinErr != nil {
+					fmt.Fprintf(os.Stderr, "agent join error: %v\n", joinErr)
+				} else {
+					fmt.Fprintf(os.Stderr, "agent pending approval: node_id=%s\n", a.config.NodeID)
+				}
+				time.Sleep(time.Duration(a.config.RetrySeconds) * time.Second)
+				continue
+			}
+			if a.config.JoinCode != "" && !a.joined {
+				if joinErr := a.join(ctx); joinErr == nil {
+					time.Sleep(time.Duration(a.config.RetrySeconds) * time.Second)
+					continue
+				}
+			}
 			fmt.Fprintf(os.Stderr, "agent error: %v\n", err)
 			time.Sleep(time.Duration(a.config.RetrySeconds) * time.Second)
 			continue
@@ -131,6 +184,66 @@ func (a *Agent) Run(ctx context.Context) error {
 			a.handle(ctx, *cmd)
 		}
 	}
+}
+
+func loadOrCreateLocalState(path string) (LocalState, error) {
+	raw, err := os.ReadFile(path)
+	if err == nil && len(bytes.TrimSpace(raw)) > 0 {
+		var state LocalState
+		if err := json.Unmarshal(raw, &state); err != nil {
+			return LocalState{}, err
+		}
+		if state.NodeID != "" && state.Token != "" {
+			return state, nil
+		}
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return LocalState{}, err
+	}
+	state := LocalState{NodeID: "node-" + randomHex(8), Token: randomHex(32)}
+	if err := os.MkdirAll(filepathDir(path), 0o755); err != nil {
+		return LocalState{}, err
+	}
+	raw, _ = json.MarshalIndent(state, "", "  ")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		return LocalState{}, err
+	}
+	return state, nil
+}
+
+func filepathDir(path string) string {
+	idx := strings.LastIndex(path, "/")
+	if idx <= 0 {
+		return "."
+	}
+	return path[:idx]
+}
+
+func randomHex(n int) string {
+	buf := make([]byte, n)
+	if _, err := rand.Read(buf); err != nil {
+		panic(err)
+	}
+	return hex.EncodeToString(buf)
+}
+
+func (a *Agent) join(ctx context.Context) error {
+	resp, err := rpc.Call(ctx, a.addr, rpc.Request{
+		Kind:     "agent.join",
+		NodeID:   a.config.NodeID,
+		Name:     a.config.NodeName,
+		Token:    a.token,
+		JoinCode: a.config.JoinCode,
+		Meta:     a.meta(),
+	}, 10*time.Second)
+	if err != nil {
+		return err
+	}
+	if !resp.Approved {
+		return errors.New("node pending approval")
+	}
+	a.joined = true
+	return nil
 }
 
 func (a *Agent) runMonitor(ctx context.Context) {
@@ -216,7 +329,7 @@ func (a *Agent) poll(ctx context.Context) (*protocol.Command, error) {
 		Kind:   "agent.poll",
 		NodeID: a.config.NodeID,
 		Token:  a.token,
-		Meta:   map[string]any{"platform": runtime.GOOS + "/" + runtime.GOARCH, "agent_version": protocol.Version},
+		Meta:   a.meta(),
 	}, 40*time.Second)
 	if err != nil {
 		return nil, err
@@ -225,6 +338,10 @@ func (a *Agent) poll(ctx context.Context) (*protocol.Command, error) {
 		a.setMonitorPeers(resp.MonitorPeers)
 	}
 	return resp.Command, nil
+}
+
+func (a *Agent) meta() map[string]any {
+	return map[string]any{"platform": runtime.GOOS + "/" + runtime.GOARCH, "agent_version": protocol.Version}
 }
 
 func (a *Agent) setMonitorPeers(peers []rpc.MonitorPeer) {

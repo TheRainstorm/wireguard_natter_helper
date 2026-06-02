@@ -20,6 +20,7 @@ type Store struct {
 
 type Data struct {
 	Nodes          map[string]Node            `json:"nodes"`
+	Domains        map[string]Domain          `json:"domains"`
 	Bindings       map[string]Binding         `json:"bindings"`
 	EndpointLeases []EndpointLease            `json:"endpoint_leases"`
 	Commands       map[string][]QueuedCommand `json:"commands"`
@@ -31,10 +32,24 @@ type Node struct {
 	Name         string `json:"name"`
 	Role         string `json:"role"`
 	TokenHash    string `json:"token_hash"`
+	DomainID     string `json:"domain_id"`
+	Approved     bool   `json:"approved"`
+	NodeType     string `json:"node_type"`
+	Interface    string `json:"interface"`
+	ConfigType   string `json:"config_type"`
+	ReloadMethod string `json:"reload_method"`
 	Status       string `json:"status"`
 	Platform     string `json:"platform"`
 	AgentVersion string `json:"agent_version"`
 	LastSeenAt   string `json:"last_seen_at"`
+}
+
+type Domain struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	JoinCode    string `json:"join_code,omitempty"`
+	CreatedAt   string `json:"created_at"`
+	Description string `json:"description,omitempty"`
 }
 
 type Binding struct {
@@ -104,6 +119,7 @@ func Open(path string) (*Store, error) {
 func newData() Data {
 	return Data{
 		Nodes:    map[string]Node{},
+		Domains:  map[string]Domain{},
 		Bindings: map[string]Binding{},
 		Commands: map[string][]QueuedCommand{},
 		Events:   []Event{},
@@ -113,6 +129,9 @@ func newData() Data {
 func (s *Store) ensureMaps() {
 	if s.data.Nodes == nil {
 		s.data.Nodes = map[string]Node{}
+	}
+	if s.data.Domains == nil {
+		s.data.Domains = map[string]Domain{}
 	}
 	if s.data.Bindings == nil {
 		s.data.Bindings = map[string]Binding{}
@@ -143,12 +162,20 @@ func (s *Store) saveLocked() error {
 func (s *Store) CreateNode(id, name, role, token string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.data.Nodes[id] = Node{ID: id, Name: name, Role: role, TokenHash: auth.HashToken(token), Status: "offline"}
+	s.data.Nodes[id] = Node{ID: id, Name: name, Role: role, TokenHash: auth.HashToken(token), Approved: true, Status: "offline"}
 	s.addEventLocked("node.upserted", "info", id, "", "Node saved", nil)
 	return s.saveLocked()
 }
 
 func (s *Store) AuthenticateNode(id, token string) (Node, bool) {
+	node, ok := s.AuthenticateNodeAnyStatus(id, token)
+	if !ok || !node.Approved {
+		return Node{}, false
+	}
+	return node, true
+}
+
+func (s *Store) AuthenticateNodeAnyStatus(id, token string) (Node, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	node, ok := s.data.Nodes[id]
@@ -162,12 +189,151 @@ func (s *Store) MarkSeen(id string, meta map[string]any) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	node := s.data.Nodes[id]
-	node.Status = "online"
+	if node.Approved {
+		node.Status = "online"
+	} else {
+		node.Status = "pending"
+	}
 	node.LastSeenAt = protocol.NowISO()
 	node.Platform, _ = meta["platform"].(string)
 	node.AgentVersion, _ = meta["agent_version"].(string)
 	s.data.Nodes[id] = node
 	return s.saveLocked()
+}
+
+func (s *Store) CreateDomain(id, name, joinCode, description string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if id == "" {
+		return errors.New("domain id is required")
+	}
+	if name == "" {
+		name = id
+	}
+	if _, exists := s.data.Domains[id]; exists {
+		return errors.New("domain already exists")
+	}
+	s.data.Domains[id] = Domain{ID: id, Name: name, JoinCode: joinCode, Description: description, CreatedAt: protocol.NowISO()}
+	s.addEventLocked("domain.created", "info", "", "", "Domain created", map[string]any{"domain_id": id})
+	return s.saveLocked()
+}
+
+func (s *Store) Domains(includeSecrets bool) []Domain {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]Domain, 0, len(s.data.Domains))
+	for _, domain := range s.data.Domains {
+		if !includeSecrets {
+			domain.JoinCode = ""
+		}
+		out = append(out, domain)
+	}
+	return out
+}
+
+func (s *Store) DomainByJoinCode(joinCode string) (Domain, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, domain := range s.data.Domains {
+		if domain.JoinCode != "" && domain.JoinCode == joinCode {
+			return domain, true
+		}
+	}
+	return Domain{}, false
+}
+
+func (s *Store) UpsertJoinedNode(domainID, nodeID, name, token string, meta map[string]any) (Node, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if nodeID == "" || token == "" {
+		return Node{}, false, errors.New("node id and token are required")
+	}
+	if _, ok := s.data.Domains[domainID]; !ok {
+		return Node{}, false, errors.New("domain not found")
+	}
+	if existing, ok := s.data.Nodes[nodeID]; ok {
+		if !auth.VerifyToken(token, existing.TokenHash) {
+			return Node{}, false, errors.New("node id already exists with a different token")
+		}
+		if existing.DomainID == "" {
+			existing.DomainID = domainID
+		}
+		existing.LastSeenAt = protocol.NowISO()
+		existing.Platform, _ = meta["platform"].(string)
+		existing.AgentVersion, _ = meta["agent_version"].(string)
+		s.data.Nodes[nodeID] = existing
+		return existing, false, s.saveLocked()
+	}
+	node := Node{
+		ID:         nodeID,
+		Name:       name,
+		TokenHash:  auth.HashToken(token),
+		DomainID:   domainID,
+		Approved:   false,
+		Status:     "pending",
+		LastSeenAt: protocol.NowISO(),
+	}
+	if node.Name == "" {
+		node.Name = node.ID
+	}
+	node.Platform, _ = meta["platform"].(string)
+	node.AgentVersion, _ = meta["agent_version"].(string)
+	s.data.Nodes[node.ID] = node
+	s.addEventLocked("node.joined", "info", node.ID, "", "Node joined and is pending approval", map[string]any{"domain_id": domainID})
+	return node, true, s.saveLocked()
+}
+
+type NodeApproval struct {
+	DomainID     string
+	Role         string
+	NodeType     string
+	Interface    string
+	ConfigType   string
+	ReloadMethod string
+	Name         string
+}
+
+func (s *Store) ApproveNode(nodeID string, approval NodeApproval) (Node, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	node, ok := s.data.Nodes[nodeID]
+	if !ok {
+		return Node{}, errors.New("node not found")
+	}
+	if approval.DomainID != "" {
+		if _, ok := s.data.Domains[approval.DomainID]; !ok {
+			return Node{}, errors.New("domain not found")
+		}
+		node.DomainID = approval.DomainID
+	}
+	if node.DomainID == "" {
+		return Node{}, errors.New("domain is required")
+	}
+	if approval.Name != "" {
+		node.Name = approval.Name
+	}
+	if approval.Role != "" {
+		node.Role = approval.Role
+	}
+	if approval.NodeType != "" {
+		node.NodeType = approval.NodeType
+	}
+	if approval.Interface != "" {
+		node.Interface = approval.Interface
+	}
+	if approval.ConfigType != "" {
+		node.ConfigType = approval.ConfigType
+	}
+	if approval.ReloadMethod != "" {
+		node.ReloadMethod = approval.ReloadMethod
+	}
+	node.Approved = true
+	if node.Status == "pending" {
+		node.Status = "offline"
+	}
+	s.data.Nodes[nodeID] = node
+	s.addEventLocked("node.approved", "info", node.ID, "", "Node approved", map[string]any{"domain_id": node.DomainID, "role": node.Role, "interface": node.Interface})
+	return node, s.saveLocked()
 }
 
 func (s *Store) AddBinding(b Binding) error {

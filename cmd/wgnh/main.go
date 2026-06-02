@@ -64,6 +64,58 @@ func daemonCmd(args []string) {
 		must(err)
 		fmt.Printf("node_id=%s\n", *id)
 		fmt.Printf("token=%s\n", token)
+	case "create-domain":
+		fs := flag.NewFlagSet("wgnh daemon create-domain", flag.ExitOnError)
+		addr := fs.String("addr", "127.0.0.1:8080", "daemon TCP address")
+		adminToken := fs.String("admin-token", "", "admin token")
+		id := fs.String("id", "", "domain id")
+		name := fs.String("name", "", "domain name")
+		joinCode := fs.String("join-code", "", "optional join code; generated when empty")
+		description := fs.String("description", "", "domain description")
+		_ = fs.Parse(args[1:])
+		if *id == "" {
+			log.Fatal("--id is required")
+		}
+		resp, err := rpc.Call(context.Background(), *addr, rpc.Request{
+			Kind:        "admin.create_domain",
+			AdminToken:  *adminToken,
+			DomainID:    *id,
+			Name:        *name,
+			JoinCode:    *joinCode,
+			Description: *description,
+		}, 10*time.Second)
+		must(err)
+		fmt.Println(pretty(resp))
+	case "approve-node":
+		fs := flag.NewFlagSet("wgnh daemon approve-node", flag.ExitOnError)
+		addr := fs.String("addr", "127.0.0.1:8080", "daemon TCP address")
+		adminToken := fs.String("admin-token", "", "admin token")
+		nodeID := fs.String("node", "", "node id")
+		domainID := fs.String("domain", "", "domain id")
+		role := fs.String("role", "client", "server or client")
+		nodeType := fs.String("node-type", "", "openwrt or linux")
+		iface := fs.String("interface", "wg0", "WireGuard interface")
+		configType := fs.String("config-type", "", "openwrt_uci, wg_conf, or runtime")
+		reloadMethod := fs.String("reload-method", "", "none, ifup, wg-quick-restart, network-reload")
+		name := fs.String("name", "", "node display name")
+		_ = fs.Parse(args[1:])
+		if *nodeID == "" {
+			log.Fatal("--node is required")
+		}
+		resp, err := rpc.Call(context.Background(), *addr, rpc.Request{
+			Kind:         "admin.approve_node",
+			AdminToken:   *adminToken,
+			NodeID:       *nodeID,
+			DomainID:     *domainID,
+			Role:         *role,
+			NodeType:     *nodeType,
+			Interface:    *iface,
+			ConfigType:   *configType,
+			ReloadMethod: *reloadMethod,
+			Name:         *name,
+		}, 10*time.Second)
+		must(err)
+		fmt.Println(pretty(resp))
 	case "add-binding":
 		fs := flag.NewFlagSet("wgnh daemon add-binding", flag.ExitOnError)
 		state := fs.String("state", "wgnh-state.json", "state file")
@@ -118,6 +170,8 @@ func daemonCmd(args []string) {
 		fmt.Println(pretty(resp))
 	case "nodes":
 		adminList(*flagSetAddrToken("wgnh daemon nodes", args[1:]), "admin.nodes")
+	case "domains":
+		adminList(*flagSetAddrToken("wgnh daemon domains", args[1:]), "admin.domains")
 	case "bindings":
 		adminList(*flagSetAddrToken("wgnh daemon bindings", args[1:]), "admin.bindings")
 	case "events":
@@ -194,7 +248,7 @@ func usage() {
 }
 
 func daemonUsage() {
-	fmt.Fprintln(os.Stderr, "usage: wgnh daemon <init|create-node|add-binding|serve|run-natter|nodes|bindings|events> ...")
+	fmt.Fprintln(os.Stderr, "usage: wgnh daemon <init|create-domain|create-node|approve-node|add-binding|serve|run-natter|domains|nodes|bindings|events> ...")
 }
 
 func must(err error) {

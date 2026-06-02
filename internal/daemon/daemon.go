@@ -79,6 +79,8 @@ func (s *Server) write(conn net.Conn, resp rpc.Response) {
 
 func (s *Server) handle(req rpc.Request, remote string) rpc.Response {
 	switch req.Kind {
+	case "agent.join":
+		return s.agentJoin(req, remote)
 	case "agent.poll":
 		return s.agentPoll(req, remote)
 	case "agent.report":
@@ -88,6 +90,15 @@ func (s *Server) handle(req rpc.Request, remote string) rpc.Response {
 			return rpc.Response{OK: false, Error: err.Error()}
 		}
 		return rpc.Response{OK: true, Nodes: s.store.Nodes()}
+	case "admin.domains":
+		if err := s.authenticateAdmin(req); err != nil {
+			return rpc.Response{OK: false, Error: err.Error()}
+		}
+		return rpc.Response{OK: true, Domains: s.store.Domains(false)}
+	case "admin.create_domain":
+		return s.adminCreateDomain(req)
+	case "admin.approve_node":
+		return s.adminApproveNode(req)
 	case "admin.bindings":
 		if err := s.authenticateAdmin(req); err != nil {
 			return rpc.Response{OK: false, Error: err.Error()}
@@ -107,6 +118,28 @@ func (s *Server) handle(req rpc.Request, remote string) rpc.Response {
 	default:
 		return rpc.Response{OK: false, Error: "unknown request kind: " + req.Kind}
 	}
+}
+
+func (s *Server) agentJoin(req rpc.Request, remote string) rpc.Response {
+	if req.NodeID == "" || req.Token == "" || req.JoinCode == "" {
+		return rpc.Response{OK: false, Error: "node_id, token, and join_code are required"}
+	}
+	domain, ok := s.store.DomainByJoinCode(req.JoinCode)
+	if !ok {
+		log.Printf("agent join failed remote=%s node=%s reason=invalid join code", remote, req.NodeID)
+		return rpc.Response{OK: false, Error: "invalid join code"}
+	}
+	node, created, err := s.store.UpsertJoinedNode(domain.ID, req.NodeID, req.Name, req.Token, req.Meta)
+	if err != nil {
+		log.Printf("agent join failed remote=%s node=%s error=%v", remote, req.NodeID, err)
+		return rpc.Response{OK: false, Error: err.Error()}
+	}
+	if created {
+		log.Printf("node joined pending approval node=%s domain=%s remote=%s", node.ID, domain.ID, remote)
+	} else {
+		log.Printf("node join refreshed node=%s domain=%s approved=%t remote=%s", node.ID, domain.ID, node.Approved, remote)
+	}
+	return rpc.Response{OK: true, Approved: node.Approved, Domain: &domain, Nodes: []store.Node{sanitizeNode(node)}}
 }
 
 func (s *Server) agentPoll(req rpc.Request, remote string) rpc.Response {
@@ -131,6 +164,56 @@ func (s *Server) agentPoll(req rpc.Request, remote string) rpc.Response {
 		time.Sleep(500 * time.Millisecond)
 	}
 	return rpc.Response{OK: true, Command: cmd, MonitorPeers: s.monitorPeersForNode(nodeID)}
+}
+
+func (s *Server) adminCreateDomain(req rpc.Request) rpc.Response {
+	if err := s.authenticateAdmin(req); err != nil {
+		return rpc.Response{OK: false, Error: err.Error()}
+	}
+	if req.DomainID == "" {
+		return rpc.Response{OK: false, Error: "domain_id is required"}
+	}
+	joinCode := req.JoinCode
+	if joinCode == "" {
+		token, err := auth.GenerateToken()
+		if err != nil {
+			return rpc.Response{OK: false, Error: err.Error()}
+		}
+		joinCode = token
+	}
+	if err := s.store.CreateDomain(req.DomainID, req.Name, joinCode, req.Description); err != nil {
+		return rpc.Response{OK: false, Error: err.Error()}
+	}
+	domain := store.Domain{ID: req.DomainID, Name: req.Name, JoinCode: joinCode, Description: req.Description}
+	if domain.Name == "" {
+		domain.Name = domain.ID
+	}
+	log.Printf("domain created id=%s", domain.ID)
+	return rpc.Response{OK: true, Domain: &domain}
+}
+
+func (s *Server) adminApproveNode(req rpc.Request) rpc.Response {
+	if err := s.authenticateAdmin(req); err != nil {
+		return rpc.Response{OK: false, Error: err.Error()}
+	}
+	if req.NodeID == "" {
+		return rpc.Response{OK: false, Error: "node_id is required"}
+	}
+	node, err := s.store.ApproveNode(req.NodeID, store.NodeApproval{
+		DomainID:     req.DomainID,
+		Role:         req.Role,
+		NodeType:     req.NodeType,
+		Interface:    req.Interface,
+		ConfigType:   req.ConfigType,
+		ReloadMethod: req.ReloadMethod,
+		Name:         req.Name,
+	})
+	if err != nil {
+		return rpc.Response{OK: false, Error: err.Error()}
+	}
+	log.Printf("node approved node=%s domain=%s role=%s type=%s interface=%s", node.ID, node.DomainID, node.Role, node.NodeType, node.Interface)
+	clean := sanitizeNode(node)
+	return rpc.Response{OK: true, Approved: true, Nodes: []store.Node{clean}}
 }
 
 func (s *Server) monitorPeersForNode(nodeID string) []rpc.MonitorPeer {
@@ -247,9 +330,13 @@ func (s *Server) authenticateAgent(req rpc.Request, remote string) (string, erro
 		log.Printf("agent auth failed remote=%s node=%q reason=missing credentials", remote, req.NodeID)
 		return "", errors.New("missing node credentials")
 	}
-	if _, ok := s.store.AuthenticateNode(req.NodeID, req.Token); !ok {
+	node, ok := s.store.AuthenticateNodeAnyStatus(req.NodeID, req.Token)
+	if !ok {
 		log.Printf("agent auth failed remote=%s node=%s reason=invalid token or unknown node", remote, req.NodeID)
 		return "", errors.New("invalid node credentials")
+	}
+	if !node.Approved {
+		return "", errors.New("node pending approval")
 	}
 	return req.NodeID, nil
 }
@@ -262,6 +349,11 @@ func (s *Server) authenticateAdmin(req rpc.Request) error {
 		return nil
 	}
 	return errors.New("invalid admin credentials")
+}
+
+func sanitizeNode(node store.Node) store.Node {
+	node.TokenHash = ""
+	return node
 }
 
 func leaseFromPayload(payload map[string]any) (store.EndpointLease, error) {

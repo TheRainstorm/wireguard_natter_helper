@@ -17,6 +17,8 @@ type Request struct {
 	Kind       string         `json:"kind"`
 	NodeID     string         `json:"node_id,omitempty"`
 	Token      string         `json:"token,omitempty"`
+	JoinCode   string         `json:"join_code,omitempty"`
+	Name       string         `json:"name,omitempty"`
 	AdminToken string         `json:"admin_token,omitempty"`
 	Meta       map[string]any `json:"meta,omitempty"`
 
@@ -26,6 +28,13 @@ type Request struct {
 
 	ServerNodeID    string `json:"server_node_id,omitempty"`
 	ServerInterface string `json:"server_interface,omitempty"`
+	DomainID        string `json:"domain_id,omitempty"`
+	Description     string `json:"description,omitempty"`
+	Role            string `json:"role,omitempty"`
+	NodeType        string `json:"node_type,omitempty"`
+	Interface       string `json:"interface,omitempty"`
+	ConfigType      string `json:"config_type,omitempty"`
+	ReloadMethod    string `json:"reload_method,omitempty"`
 	Limit           int    `json:"limit,omitempty"`
 }
 
@@ -35,6 +44,9 @@ type Response struct {
 	Command      *protocol.Command `json:"command,omitempty"`
 	MonitorPeers []MonitorPeer     `json:"monitor_peers,omitempty"`
 	Queued       int               `json:"queued,omitempty"`
+	Approved     bool              `json:"approved,omitempty"`
+	Domain       *store.Domain     `json:"domain,omitempty"`
+	Domains      []store.Domain    `json:"domains,omitempty"`
 	Nodes        []store.Node      `json:"nodes,omitempty"`
 	Bindings     []store.Binding   `json:"bindings,omitempty"`
 	Events       []store.Event     `json:"events,omitempty"`
