@@ -6,14 +6,19 @@ USE_PROCD=1
 
 start_service() {
 	config_load wgnh
-	local enabled binary config_path
+	local enabled binary daemon_addr state_path retry_seconds dry_run
 	config_get_bool enabled agent enabled 0
 	[ "$enabled" = "1" ] || return 0
 	config_get binary agent binary /usr/bin/wgnh
-	config_get config_path agent config_path /etc/wgnh/agent.json
+	config_get daemon_addr agent daemon_addr
+	config_get state_path agent state_path /etc/wgnh/node-state.json
+	config_get retry_seconds agent retry_seconds 5
+	config_get_bool dry_run agent dry_run 0
+	[ -n "$daemon_addr" ] || config_get daemon_addr daemon connect_addr 127.0.0.1:3333
 
 	procd_open_instance
-	procd_set_param command "$binary" agent --config "$config_path"
+	procd_set_param command "$binary" agent --daemon-addr "$daemon_addr" --state-path "$state_path" --retry-seconds "$retry_seconds"
+	[ "$dry_run" = "1" ] && procd_append_param command --dry-run
 	procd_set_param respawn 3600 5 5
 	procd_set_param stdout 1
 	procd_set_param stderr 1

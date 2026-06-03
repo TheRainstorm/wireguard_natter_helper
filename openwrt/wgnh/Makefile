@@ -30,7 +30,7 @@ define Package/wgnh/description
 endef
 
 define Package/wgnh/conffiles
-/etc/wgnh/agent.json
+/etc/wgnh/node-state.json
 /etc/wgnh/state.json
 /etc/wgnh/admin-token
 endef

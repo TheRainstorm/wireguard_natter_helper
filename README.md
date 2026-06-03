@@ -16,7 +16,7 @@ The VPS daemon does not expose HTTP. It listens on a custom TCP JSON-line protoc
 ## Features
 
 - Custom TCP control protocol instead of an HTTP API on the VPS.
-- Web UI domain creation, join-code enrollment, and browser approval.
+- Web UI domain creation and browser approval; nodes can start with only the daemon address and receive role, interface, Natter, and WireGuard settings after approval.
 - Agent-reported WireGuard interface inventory with automatic binding creation.
 - Node token authentication and optional admin token for management commands.
 - OpenWrt UCI endpoint updates.
@@ -87,18 +87,18 @@ Tagged releases such as `v0.1.0` publish the built ipk files to GitHub Releases.
 
 Check your router with `cat /etc/os-release`. Install the package whose architecture matches `OPENWRT_ARCH`; `opkg` rejects packages built for a different OpenWrt architecture.
 
-Copy the binary and the agent config:
+If you install only the binary without the LuCI package, use the OpenWrt init script below. First copy the binary:
 
 ```sh
 install -m 0755 ./wgnh /usr/bin/wgnh
 mkdir -p /etc/wgnh
-cp ./examples/server-agent-natter.json /etc/wgnh/agent.json
 ```
 
-Install and enable the agent service:
+Install the agent service, then set `WGNH_DAEMON_ADDR` at the top of the script to your VPS daemon:
 
 ```sh
 cp deploy/openwrt/wgnh-agent.init /etc/init.d/wgnh-agent
+sed -i "s/127.0.0.1:3333/ecs01.yfycloud.site:3333/" /etc/init.d/wgnh-agent
 chmod +x /etc/init.d/wgnh-agent
 /etc/init.d/wgnh-agent enable
 /etc/init.d/wgnh-agent start
@@ -147,7 +147,7 @@ Install and enable the agent service:
 ```sh
 cp deploy/systemd/wgnh-agent.service /etc/systemd/system/wgnh-agent.service
 cp deploy/systemd/wgnh-agent.env /etc/wgnh/agent.env
-cp ./examples/client-agent.json /etc/wgnh/agent.json
+sed -i "s/your-vps.example.com:3333/ecs01.yfycloud.site:3333/" /etc/wgnh/agent.env
 
 systemctl daemon-reload
 systemctl enable --now wgnh-agent
@@ -260,77 +260,35 @@ Open `http://127.0.0.1:9090`, enter:
 - daemon TCP address: `your-vps.example.com:3333`
 - admin token: the value passed to `wgnh daemon serve --admin-token`
 
-After connecting, create a domain such as `home` in the `Domain` section. New nodes can start with only the daemon address and then be assigned to a domain in the browser. `join_code` is still available when you want to pre-limit a node to one domain. The browser stores the daemon address and admin token in local storage.
+After connecting, create a domain such as `home` in the `Domain` section. New nodes only need to start with the daemon address, then you assign them to a domain in the browser. `join_code` is still available for advanced setups where you want to pre-limit a node to one domain. The browser stores the daemon address and admin token in local storage.
 
 ## 3. Configure the NAT-side server agent
 
-Example `/etc/wgnh/agent.json` on `home-a`:
-
-```json
-{
-  "daemon_addr": "your-vps.example.com:3333",
-  "node_name": "home-a",
-  "retry_seconds": 5,
-  "wireguard": [
-    {
-      "name": "wg0",
-      "listen_port": 51820,
-      "config_type": "openwrt_uci"
-    }
-  ],
-  "natter": {
-    "stop_wireguard": true,
-    "wireguard_control_method": "ifup",
-    "command": [
-      "python3",
-      "/opt/Natter/natter.py",
-      "-u",
-      "-i",
-      "pppoe-wan",
-      "-b",
-      "51820",
-      "--map-only"
-    ],
-    "timeout_seconds": 90
-  }
-}
-```
-
-Start the agent:
+Start the agent on `home-a` with only the daemon address:
 
 ```sh
-./wgnh agent --config /etc/wgnh/agent.json
+./wgnh agent --daemon-addr your-vps.example.com:3333
 ```
 
-On first start, the agent generates a local `node_id` and token in the default `/etc/wgnh/node-state.json`, then registers with the VPS as a pending node. Go back to the Web UI node table, approve the node, choose the domain, choose role `server`, set interface `wg0`, and select the real node type, `openwrt` or `linux`.
+On first start, the agent generates a local `node_id` and token in the default `/etc/wgnh/node-state.json`, registers with the VPS as a pending node, and tries to discover WireGuard interfaces automatically. Go back to the Web UI node table, approve the node, choose the domain, choose role `server`, set interface `wg0`, and select the real node type, `openwrt` or `linux`.
 
-`stop_wireguard: true` is important because Natter must bind the same local port as WireGuard. The agent stops the interface, obtains the mapping, then starts the interface again.
+For server nodes, also fill the Natter command in the approval row, for example:
 
-Supported `wireguard_control_method` values:
+```text
+python3 /opt/Natter/natter.py -u -i pppoe-wan -b 51820 --map-only
+```
 
-- `ifup` or `openwrt`: `ifdown wg0` / `ifup wg0`
-- `wg-quick`: `wg-quick down wg0` / `wg-quick up wg0`
-- `systemd`: `systemctl stop wg-quick@wg0` / `systemctl start wg-quick@wg0`
+If Natter must bind the same local port as WireGuard, enable `Stop WG` and choose the control method: OpenWrt usually uses `ifup`, while Linux usually uses `wg-quick` or `systemd`.
 
 ## 4. Configure client agents
 
-Example `/etc/wgnh/agent.json` on `office-b` can now be this small:
-
-```json
-{
-  "daemon_addr": "your-vps.example.com:3333"
-}
-```
-
-The agent generates its local identity, discovers WireGuard interfaces, and enables client monitoring after approval in the browser. Only advanced setups need local `node_name`, `state_path`, `wireguard`, or `monitor` fields.
-
-Start the agent:
+Start the agent on `office-b` the same way:
 
 ```sh
-./wgnh agent --config /etc/wgnh/agent.json
+./wgnh agent --daemon-addr your-vps.example.com:3333
 ```
 
-Go back to the Web UI, approve the node, choose the domain, choose role `client`, and set interface `wg0`. The node type selected in the browser decides the default config behavior: OpenWrt uses `openwrt_uci/ifup`, and Linux uses `wg_conf/wg-quick-restart`.
+The agent generates its local identity, discovers WireGuard interfaces, and enables client monitoring after approval in the browser. Go back to the Web UI, approve the node, choose the domain, choose role `client`, and set interface `wg0`. The node type selected in the browser decides the default config behavior: OpenWrt uses `openwrt_uci/ifup`, and Linux uses `wg_conf/wg-quick-restart`.
 
 ## 5. Automatic binding creation
 

@@ -230,13 +230,18 @@ func (s *Server) adminApproveNode(req rpc.Request) rpc.Response {
 		return rpc.Response{OK: false, Error: "node_id is required"}
 	}
 	node, err := s.store.ApproveNode(req.NodeID, store.NodeApproval{
-		DomainID:     req.DomainID,
-		Role:         req.Role,
-		NodeType:     req.NodeType,
-		Interface:    req.Interface,
-		ConfigType:   req.ConfigType,
-		ReloadMethod: req.ReloadMethod,
-		Name:         req.Name,
+		DomainID:                  req.DomainID,
+		Role:                      req.Role,
+		NodeType:                  req.NodeType,
+		Interface:                 req.Interface,
+		ConfigType:                req.ConfigType,
+		ReloadMethod:              req.ReloadMethod,
+		NatterCommand:             req.NatterCommand,
+		NatterTimeoutSeconds:      req.NatterTimeoutSeconds,
+		NatterStopWireGuard:       req.NatterStopWireGuard,
+		NatterWireGuardControl:    req.NatterWireGuardControl,
+		NatterRestartDelaySeconds: req.NatterRestartDelaySeconds,
+		Name:                      req.Name,
 	})
 	if err != nil {
 		return rpc.Response{OK: false, Error: err.Error()}

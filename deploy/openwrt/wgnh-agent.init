@@ -5,11 +5,13 @@ STOP=10
 USE_PROCD=1
 
 WGNH_BIN="${WGNH_BIN:-/usr/bin/wgnh}"
-WGNH_CONFIG="${WGNH_CONFIG:-/etc/wgnh/agent.json}"
+WGNH_DAEMON_ADDR="${WGNH_DAEMON_ADDR:-127.0.0.1:3333}"
+WGNH_STATE_PATH="${WGNH_STATE_PATH:-/etc/wgnh/node-state.json}"
+WGNH_RETRY_SECONDS="${WGNH_RETRY_SECONDS:-5}"
 
 start_service() {
 	procd_open_instance
-	procd_set_param command "$WGNH_BIN" agent --config "$WGNH_CONFIG"
+	procd_set_param command "$WGNH_BIN" agent --daemon-addr "$WGNH_DAEMON_ADDR" --state-path "$WGNH_STATE_PATH" --retry-seconds "$WGNH_RETRY_SECONDS"
 	procd_set_param respawn 3600 5 5
 	procd_set_param stdout 1
 	procd_set_param stderr 1

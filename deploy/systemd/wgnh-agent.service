@@ -6,7 +6,7 @@ After=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=-/etc/wgnh/agent.env
-ExecStart=/usr/local/bin/wgnh agent --config=${WGNH_AGENT_CONFIG}
+ExecStart=/usr/local/bin/wgnh agent --daemon-addr=${WGNH_AGENT_DAEMON_ADDR} --state-path=${WGNH_AGENT_STATE_PATH} --retry-seconds=${WGNH_AGENT_RETRY_SECONDS}
 Restart=always
 RestartSec=5s
 

@@ -30,20 +30,25 @@ type Data struct {
 }
 
 type Node struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	Role         string `json:"role"`
-	TokenHash    string `json:"token_hash"`
-	DomainID     string `json:"domain_id"`
-	Approved     bool   `json:"approved"`
-	NodeType     string `json:"node_type"`
-	Interface    string `json:"interface"`
-	ConfigType   string `json:"config_type"`
-	ReloadMethod string `json:"reload_method"`
-	Status       string `json:"status"`
-	Platform     string `json:"platform"`
-	AgentVersion string `json:"agent_version"`
-	LastSeenAt   string `json:"last_seen_at"`
+	ID                        string   `json:"id"`
+	Name                      string   `json:"name"`
+	Role                      string   `json:"role"`
+	TokenHash                 string   `json:"token_hash"`
+	DomainID                  string   `json:"domain_id"`
+	Approved                  bool     `json:"approved"`
+	NodeType                  string   `json:"node_type"`
+	Interface                 string   `json:"interface"`
+	ConfigType                string   `json:"config_type"`
+	ReloadMethod              string   `json:"reload_method"`
+	NatterCommand             []string `json:"natter_command,omitempty"`
+	NatterTimeoutSeconds      int      `json:"natter_timeout_seconds,omitempty"`
+	NatterStopWireGuard       bool     `json:"natter_stop_wireguard,omitempty"`
+	NatterWireGuardControl    string   `json:"natter_wireguard_control,omitempty"`
+	NatterRestartDelaySeconds int      `json:"natter_restart_delay_seconds,omitempty"`
+	Status                    string   `json:"status"`
+	Platform                  string   `json:"platform"`
+	AgentVersion              string   `json:"agent_version"`
+	LastSeenAt                string   `json:"last_seen_at"`
 }
 
 type Domain struct {
@@ -346,13 +351,18 @@ func (s *Store) UpsertPendingNode(nodeID, name, token string, meta map[string]an
 }
 
 type NodeApproval struct {
-	DomainID     string
-	Role         string
-	NodeType     string
-	Interface    string
-	ConfigType   string
-	ReloadMethod string
-	Name         string
+	DomainID                  string
+	Role                      string
+	NodeType                  string
+	Interface                 string
+	ConfigType                string
+	ReloadMethod              string
+	NatterCommand             []string
+	NatterTimeoutSeconds      int
+	NatterStopWireGuard       bool
+	NatterWireGuardControl    string
+	NatterRestartDelaySeconds int
+	Name                      string
 }
 
 func (s *Store) ApproveNode(nodeID string, approval NodeApproval) (Node, error) {
@@ -388,6 +398,19 @@ func (s *Store) ApproveNode(nodeID string, approval NodeApproval) (Node, error) 
 	}
 	if approval.ReloadMethod != "" {
 		node.ReloadMethod = approval.ReloadMethod
+	}
+	if len(approval.NatterCommand) > 0 {
+		node.NatterCommand = append([]string(nil), approval.NatterCommand...)
+		node.NatterStopWireGuard = approval.NatterStopWireGuard
+	}
+	if approval.NatterTimeoutSeconds > 0 {
+		node.NatterTimeoutSeconds = approval.NatterTimeoutSeconds
+	}
+	if approval.NatterWireGuardControl != "" {
+		node.NatterWireGuardControl = approval.NatterWireGuardControl
+	}
+	if approval.NatterRestartDelaySeconds > 0 {
+		node.NatterRestartDelaySeconds = approval.NatterRestartDelaySeconds
 	}
 	defaultNodeRuntimeFields(&node)
 	node.Approved = true

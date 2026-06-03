@@ -110,14 +110,19 @@ func (s *Server) apiApproveNode(w http.ResponseWriter, r *http.Request) {
 	}
 	var req struct {
 		daemonCredentials
-		NodeID       string `json:"node_id"`
-		DomainID     string `json:"domain_id"`
-		Role         string `json:"role"`
-		NodeType     string `json:"node_type"`
-		Interface    string `json:"interface"`
-		ConfigType   string `json:"config_type"`
-		ReloadMethod string `json:"reload_method"`
-		Name         string `json:"name"`
+		NodeID                    string   `json:"node_id"`
+		DomainID                  string   `json:"domain_id"`
+		Role                      string   `json:"role"`
+		NodeType                  string   `json:"node_type"`
+		Interface                 string   `json:"interface"`
+		ConfigType                string   `json:"config_type"`
+		ReloadMethod              string   `json:"reload_method"`
+		NatterCommand             []string `json:"natter_command"`
+		NatterTimeoutSeconds      int      `json:"natter_timeout_seconds"`
+		NatterStopWireGuard       bool     `json:"natter_stop_wireguard"`
+		NatterWireGuardControl    string   `json:"natter_wireguard_control"`
+		NatterRestartDelaySeconds int      `json:"natter_restart_delay_seconds"`
+		Name                      string   `json:"name"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
@@ -133,16 +138,21 @@ func (s *Server) apiApproveNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp, err := rpc.Call(r.Context(), creds.DaemonAddr, rpc.Request{
-		Kind:         "admin.approve_node",
-		AdminToken:   creds.AdminToken,
-		NodeID:       strings.TrimSpace(req.NodeID),
-		DomainID:     strings.TrimSpace(req.DomainID),
-		Role:         strings.TrimSpace(req.Role),
-		NodeType:     strings.TrimSpace(req.NodeType),
-		Interface:    strings.TrimSpace(req.Interface),
-		ConfigType:   strings.TrimSpace(req.ConfigType),
-		ReloadMethod: strings.TrimSpace(req.ReloadMethod),
-		Name:         strings.TrimSpace(req.Name),
+		Kind:                      "admin.approve_node",
+		AdminToken:                creds.AdminToken,
+		NodeID:                    strings.TrimSpace(req.NodeID),
+		DomainID:                  strings.TrimSpace(req.DomainID),
+		Role:                      strings.TrimSpace(req.Role),
+		NodeType:                  strings.TrimSpace(req.NodeType),
+		Interface:                 strings.TrimSpace(req.Interface),
+		ConfigType:                strings.TrimSpace(req.ConfigType),
+		ReloadMethod:              strings.TrimSpace(req.ReloadMethod),
+		NatterCommand:             req.NatterCommand,
+		NatterTimeoutSeconds:      req.NatterTimeoutSeconds,
+		NatterStopWireGuard:       req.NatterStopWireGuard,
+		NatterWireGuardControl:    strings.TrimSpace(req.NatterWireGuardControl),
+		NatterRestartDelaySeconds: req.NatterRestartDelaySeconds,
+		Name:                      strings.TrimSpace(req.Name),
 	}, 10*time.Second)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"ok": false, "error": err.Error()})
@@ -408,6 +418,7 @@ const pageHTML = `<!doctype html>
       background: #fff;
       font: inherit;
     }
+    input[type="checkbox"] { width: auto; min-height: auto; }
     textarea { min-height: 72px; resize: vertical; }
     .stats {
       display: grid;
@@ -533,6 +544,7 @@ const pageHTML = `<!doctype html>
       min-width: 980px;
     }
     .node-name { display: grid; gap: 5px; }
+    .check { display: inline-flex; align-items: center; gap: 6px; min-height: 38px; color: var(--text); font-size: 13px; }
     .mini { font-size: 12px; color: var(--muted); }
     .muted { color: var(--muted); }
     .wrap { white-space: normal; min-width: 220px; }
@@ -599,7 +611,7 @@ const pageHTML = `<!doctype html>
     <section>
       <div class="section-head">
         <h2>Domain</h2>
-        <span class="muted">创建后把 join code 填到节点 agent 配置里</span>
+        <span class="muted">创建后启动只带 daemon_addr 的 agent，再在这里审批节点</span>
       </div>
       <div class="form-grid">
         <label>Domain ID
@@ -793,17 +805,26 @@ const pageHTML = `<!doctype html>
 
     async function approveNode(node, idx, btn) {
       const prefix = 'approve-' + idx + '-';
+      const role = field(prefix + 'role').value;
+      const natterCommand = splitCommand(field(prefix + 'natterCommand').value);
       const payload = {
         ...credentials(),
         node_id: node.id,
         domain_id: field(prefix + 'domain').value,
-        role: field(prefix + 'role').value,
+        role,
         node_type: field(prefix + 'nodeType').value,
         interface: field(prefix + 'interface').value.trim(),
         config_type: field(prefix + 'configType').value,
         reload_method: field(prefix + 'reloadMethod').value,
         name: field(prefix + 'name').value.trim()
       };
+      if (role === 'server' && natterCommand.length) {
+        payload.natter_command = natterCommand;
+        payload.natter_timeout_seconds = numberValue(field(prefix + 'natterTimeout').value);
+        payload.natter_stop_wireguard = field(prefix + 'natterStop').checked;
+        payload.natter_wireguard_control = field(prefix + 'natterControl').value;
+        payload.natter_restart_delay_seconds = numberValue(field(prefix + 'natterRestartDelay').value);
+      }
       if (!payload.domain_id || !payload.role || !payload.interface) {
         toast('审批需要选择 domain、角色并填写接口');
         return;
@@ -879,6 +900,10 @@ const pageHTML = `<!doctype html>
           + '<td>' + (pending ? approvalControls(node, idx, domains) : '<span class="muted">无需操作</span>') + '</td>'
           + '</tr>';
       }).join('');
+      body.querySelectorAll('select[data-role]').forEach(select => {
+        updateNatterControls(select);
+        select.addEventListener('change', () => updateNatterControls(select));
+      });
       body.querySelectorAll('button[data-approve]').forEach(btn => {
         const idx = Number(btn.dataset.approve);
         btn.addEventListener('click', () => approveNode(nodes[idx], idx, btn));
@@ -891,16 +916,30 @@ const pageHTML = `<!doctype html>
       const defaultNodeType = node.node_type || inferNodeType(node.platform);
       const defaultConfigType = node.config_type || (defaultNodeType === 'openwrt' ? 'openwrt_uci' : 'wg_conf');
       const defaultReload = node.reload_method || (defaultNodeType === 'openwrt' ? 'ifup' : 'wg-quick-restart');
+      const defaultNatterControl = node.natter_wireguard_control || (defaultNodeType === 'openwrt' ? 'ifup' : 'wg-quick');
       return '<div class="approval">'
         + '<input id="' + id + 'name" placeholder="节点名称" value="' + escapeValue(node.name || '') + '">'
         + '<select id="' + id + 'domain">' + domainOptions + '</select>'
-        + '<select id="' + id + 'role"><option value="client"' + selected('client', node.role || 'client') + '>client</option><option value="server"' + selected('server', node.role) + '>server</option></select>'
+        + '<select id="' + id + 'role" data-role="' + idx + '"><option value="client"' + selected('client', node.role || 'client') + '>client</option><option value="server"' + selected('server', node.role) + '>server</option></select>'
         + '<select id="' + id + 'nodeType"><option value="linux"' + selected('linux', defaultNodeType) + '>linux</option><option value="openwrt"' + selected('openwrt', defaultNodeType) + '>openwrt</option></select>'
         + '<input id="' + id + 'interface" placeholder="wg0" value="' + escapeValue(node.interface || 'wg0') + '">'
         + '<select id="' + id + 'configType"><option value="wg_conf"' + selected('wg_conf', defaultConfigType) + '>wg_conf</option><option value="openwrt_uci"' + selected('openwrt_uci', defaultConfigType) + '>openwrt_uci</option><option value="runtime"' + selected('runtime', defaultConfigType) + '>runtime</option></select>'
         + '<select id="' + id + 'reloadMethod"><option value="wg-quick-restart"' + selected('wg-quick-restart', defaultReload) + '>wg-quick-restart</option><option value="ifup"' + selected('ifup', defaultReload) + '>ifup</option><option value="none"' + selected('none', defaultReload) + '>none</option></select>'
+        + '<div id="' + id + 'natterGroup" class="natter-fields">'
+        + '<input id="' + id + 'natterCommand" placeholder="server 可填: python3 /opt/Natter/natter.py -u -i pppoe-wan -b 51820 --map-only" value="' + escapeValue((node.natter_command || []).join(' ')) + '">'
+        + '<input id="' + id + 'natterTimeout" type="number" min="1" placeholder="Natter timeout" value="' + escapeValue(node.natter_timeout_seconds || 90) + '">'
+        + '<label class="check"><input id="' + id + 'natterStop" type="checkbox" ' + (node.natter_stop_wireguard ? 'checked' : '') + '>停 WG</label>'
+        + '<select id="' + id + 'natterControl"><option value="ifup"' + selected('ifup', defaultNatterControl) + '>ifup</option><option value="wg-quick"' + selected('wg-quick', defaultNatterControl) + '>wg-quick</option><option value="systemd"' + selected('systemd', defaultNatterControl) + '>systemd</option></select>'
+        + '<input id="' + id + 'natterRestartDelay" type="number" min="0" placeholder="restart delay" value="' + escapeValue(node.natter_restart_delay_seconds || 0) + '">'
+        + '</div>'
         + '<button data-approve="' + idx + '">允许加入</button>'
         + '</div>';
+    }
+
+    function updateNatterControls(select) {
+      const group = field('approve-' + select.dataset.role + '-natterGroup');
+      if (!group) return;
+      group.hidden = select.value !== 'server';
     }
 
     function renderInterfaces(interfaces) {
@@ -988,6 +1027,51 @@ const pageHTML = `<!doctype html>
       const value = String(platform || '').toLowerCase();
       if (value.includes('openwrt')) return 'openwrt';
       return 'linux';
+    }
+
+    function splitCommand(value) {
+      const input = String(value || '').trim();
+      if (!input) return [];
+      const parts = [];
+      let current = '';
+      let quote = '';
+      let escaped = false;
+      for (const ch of input) {
+        if (escaped) {
+          current += ch;
+          escaped = false;
+          continue;
+        }
+        if (ch === '\\') {
+          escaped = true;
+          continue;
+        }
+        if (quote) {
+          if (ch === quote) quote = '';
+          else current += ch;
+          continue;
+        }
+        if (ch === '"' || ch === "'") {
+          quote = ch;
+          continue;
+        }
+        if (/\s/.test(ch)) {
+          if (current) {
+            parts.push(current);
+            current = '';
+          }
+          continue;
+        }
+        current += ch;
+      }
+      if (escaped) current += '\\';
+      if (current) parts.push(current);
+      return parts;
+    }
+
+    function numberValue(value) {
+      const n = Number(value);
+      return Number.isFinite(n) && n > 0 ? n : 0;
     }
 
     function shortKey(value) {

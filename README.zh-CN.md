@@ -16,7 +16,7 @@ VPS daemon 不提供 HTTP API，只监听自定义 TCP JSON-line 协议。Web UI
 ## 功能
 
 - VPS 使用自定义 TCP 控制协议，不暴露 HTTP API。
-- Web UI 创建 domain，节点使用 join code 申请加入，管理员在网页里审批。
+- Web UI 创建 domain，节点只带 daemon 地址启动，管理员在网页里审批并下发角色、接口、Natter 和 WireGuard 配置。
 - agent 自动上报 WireGuard 接口、公钥和 peer 列表，daemon 可自动生成 binding。
 - 节点 token 认证，管理命令可配置 admin token。
 - 支持 OpenWrt UCI endpoint 更新。
@@ -87,18 +87,18 @@ opkg install ./wgnh_*.ipk ./luci-app-wgnh_*.ipk
 
 可以用 `cat /etc/os-release` 查看路由器的 `OPENWRT_ARCH`。必须安装匹配架构的 ipk，否则 `opkg` 会提示 incompatible with the architectures configured。
 
-先复制二进制和 agent 配置：
+如果只手动安装二进制，不安装 LuCI 包，可以用下面的 OpenWrt init 脚本。先复制二进制：
 
 ```sh
 install -m 0755 ./wgnh /usr/bin/wgnh
 mkdir -p /etc/wgnh
-cp ./examples/server-agent-natter.json /etc/wgnh/agent.json
 ```
 
-安装并启用 agent 服务：
+安装 agent 服务，并把 VPS daemon 地址写到脚本顶部的 `WGNH_DAEMON_ADDR`：
 
 ```sh
 cp deploy/openwrt/wgnh-agent.init /etc/init.d/wgnh-agent
+sed -i "s/127.0.0.1:3333/ecs01.yfycloud.site:3333/" /etc/init.d/wgnh-agent
 chmod +x /etc/init.d/wgnh-agent
 /etc/init.d/wgnh-agent enable
 /etc/init.d/wgnh-agent start
@@ -147,7 +147,7 @@ mkdir -p /etc/wgnh
 ```sh
 cp deploy/systemd/wgnh-agent.service /etc/systemd/system/wgnh-agent.service
 cp deploy/systemd/wgnh-agent.env /etc/wgnh/agent.env
-cp ./examples/client-agent.json /etc/wgnh/agent.json
+sed -i "s/your-vps.example.com:3333/ecs01.yfycloud.site:3333/" /etc/wgnh/agent.env
 
 systemctl daemon-reload
 systemctl enable --now wgnh-agent
@@ -260,77 +260,35 @@ docker run --rm -p 9090:9090 wgnh:local web --addr 0.0.0.0:9090
 - daemon TCP 地址：`your-vps.example.com:3333`
 - admin token：启动 `wgnh daemon serve --admin-token` 时设置的值
 
-点击连接后，在 `Domain` 区域创建一个 domain，例如 `home`。新节点可以只配置 daemon 地址启动，然后在网页里选择 domain 并审批；`join_code` 仍然保留给你想预先限制节点加入某个 domain 的场景。浏览器会把 daemon 地址和 admin token 保存到 localStorage。
+点击连接后，在 `Domain` 区域创建一个 domain，例如 `home`。新节点只需要带 daemon 地址启动，然后在网页里选择 domain 并审批；`join_code` 仍然保留给你想预先限制节点加入某个 domain 的高级场景。浏览器会把 daemon 地址和 admin token 保存到 localStorage。
 
 ## 3. 配置 NAT 后的 server agent
 
-`home-a` 上的 `/etc/wgnh/agent.json` 示例：
-
-```json
-{
-  "daemon_addr": "your-vps.example.com:3333",
-  "node_name": "home-a",
-  "retry_seconds": 5,
-  "wireguard": [
-    {
-      "name": "wg0",
-      "listen_port": 51820,
-      "config_type": "openwrt_uci"
-    }
-  ],
-  "natter": {
-    "stop_wireguard": true,
-    "wireguard_control_method": "ifup",
-    "command": [
-      "python3",
-      "/opt/Natter/natter.py",
-      "-u",
-      "-i",
-      "pppoe-wan",
-      "-b",
-      "51820",
-      "--map-only"
-    ],
-    "timeout_seconds": 90
-  }
-}
-```
-
-启动 agent：
+`home-a` 上启动 agent 只需要 daemon 地址：
 
 ```sh
-./wgnh agent --config /etc/wgnh/agent.json
+./wgnh agent --daemon-addr your-vps.example.com:3333
 ```
 
-第一次启动时，agent 会在默认 `/etc/wgnh/node-state.json` 里自动生成本机 `node_id` 和 token，然后向 VPS 注册为待审批节点。回到 Web UI 的节点表，允许这个节点加入，选择 domain，角色选 `server`，接口填 `wg0`，节点类型按实际选择 `openwrt` 或 `linux`。
+第一次启动时，agent 会在默认 `/etc/wgnh/node-state.json` 里自动生成本机 `node_id` 和 token，然后向 VPS 注册为待审批节点，并尝试自动发现 WireGuard 接口。回到 Web UI 的节点表，允许这个节点加入，选择 domain，角色选 `server`，接口填 `wg0`，节点类型按实际选择 `openwrt` 或 `linux`。
 
-`stop_wireguard: true` 很重要：Natter 需要绑定 WireGuard 使用的本地端口，所以 agent 会先停止接口，拿到映射后再启动接口。
+server 节点还需要在审批行里填写 Natter 命令，例如：
 
-`wireguard_control_method` 可选：
+```text
+python3 /opt/Natter/natter.py -u -i pppoe-wan -b 51820 --map-only
+```
 
-- `ifup` 或 `openwrt`：`ifdown wg0` / `ifup wg0`
-- `wg-quick`：`wg-quick down wg0` / `wg-quick up wg0`
-- `systemd`：`systemctl stop wg-quick@wg0` / `systemctl start wg-quick@wg0`
+如果 Natter 需要占用 WireGuard 的本地端口，勾选 `停 WG`，并选择控制方式：OpenWrt 通常选 `ifup`，普通 Linux 通常选 `wg-quick` 或 `systemd`。
 
 ## 4. 配置 client agent
 
-`office-b` 上的 `/etc/wgnh/agent.json` 现在可以最小化成这样：
-
-```json
-{
-  "daemon_addr": "your-vps.example.com:3333"
-}
-```
-
-agent 会自动生成本机身份、自动发现 WireGuard 接口，并在网页审批后启用 client 监控。高级场景才需要手动写 `node_name`、`state_path`、`wireguard` 或 `monitor`。
-
-启动 agent：
+`office-b` 上启动 agent 同样只需要 daemon 地址：
 
 ```sh
-./wgnh agent --config /etc/wgnh/agent.json
+./wgnh agent --daemon-addr your-vps.example.com:3333
 ```
 
-回到 Web UI，允许这个节点加入，选择 domain，角色选 `client`，接口填 `wg0`。网页审批里的节点类型会决定默认配置方式：OpenWrt 默认 `openwrt_uci/ifup`，Linux 默认 `wg_conf/wg-quick-restart`。
+agent 会自动生成本机身份、自动发现 WireGuard 接口，并在网页审批后启用 client 监控。回到 Web UI，允许这个节点加入，选择 domain，角色选 `client`，接口填 `wg0`。网页审批里的节点类型会决定默认配置方式：OpenWrt 默认 `openwrt_uci/ifup`，Linux 默认 `wg_conf/wg-quick-restart`。
 
 ## 5. 自动生成 binding
 

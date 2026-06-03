@@ -162,3 +162,34 @@ func TestPendingNodeCanRegisterWithoutDomainThenBeApproved(t *testing.T) {
 		t.Fatal("approved node should authenticate")
 	}
 }
+
+func TestApproveNodeStoresNatterConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateDomain("home", "Home", "join-home", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.UpsertPendingNode("server", "Server", "server-token", nil); err != nil {
+		t.Fatal(err)
+	}
+	node, err := st.ApproveNode("server", NodeApproval{
+		DomainID:                  "home",
+		Role:                      "server",
+		NodeType:                  "openwrt",
+		Interface:                 "wg0",
+		NatterCommand:             []string{"python3", "/opt/Natter/natter.py", "--map-only"},
+		NatterTimeoutSeconds:      60,
+		NatterStopWireGuard:       true,
+		NatterWireGuardControl:    "ifup",
+		NatterRestartDelaySeconds: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(node.NatterCommand) != 3 || node.NatterCommand[1] != "/opt/Natter/natter.py" || node.NatterTimeoutSeconds != 60 || !node.NatterStopWireGuard || node.NatterWireGuardControl != "ifup" || node.NatterRestartDelaySeconds != 3 {
+		t.Fatalf("unexpected natter config: %#v", node)
+	}
+}

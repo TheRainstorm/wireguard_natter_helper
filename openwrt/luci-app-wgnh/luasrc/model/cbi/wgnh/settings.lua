@@ -52,8 +52,23 @@ o = s:option(Value, "binary", translate("Binary path"))
 o.default = "/usr/bin/wgnh"
 o.rmempty = false
 
-o = s:option(Value, "config_path", translate("Agent config"))
-o.default = "/etc/wgnh/agent.json"
+o = s:option(Value, "daemon_addr", translate("Daemon address"))
+o.description = translate("The only required agent setting. Leave empty to reuse the daemon address configured above.")
+o.placeholder = "ecs01.yfycloud.site:3333"
+o.rmempty = true
+
+o = s:option(Value, "state_path", translate("Node state file"))
+o.description = translate("Stores the generated node id and token. Keep this file when upgrading or rebooting.")
+o.default = "/etc/wgnh/node-state.json"
+o.rmempty = false
+
+o = s:option(Value, "retry_seconds", translate("Retry interval"))
+o.datatype = "uinteger"
+o.default = "5"
+o.rmempty = false
+
+o = s:option(Flag, "dry_run", translate("Dry run"))
+o.description = translate("Report actions without changing WireGuard configuration.")
 o.rmempty = false
 
 return m

@@ -26,16 +26,21 @@ type Request struct {
 	CommandID  string         `json:"command_id,omitempty"`
 	Payload    map[string]any `json:"payload,omitempty"`
 
-	ServerNodeID    string `json:"server_node_id,omitempty"`
-	ServerInterface string `json:"server_interface,omitempty"`
-	DomainID        string `json:"domain_id,omitempty"`
-	Description     string `json:"description,omitempty"`
-	Role            string `json:"role,omitempty"`
-	NodeType        string `json:"node_type,omitempty"`
-	Interface       string `json:"interface,omitempty"`
-	ConfigType      string `json:"config_type,omitempty"`
-	ReloadMethod    string `json:"reload_method,omitempty"`
-	Limit           int    `json:"limit,omitempty"`
+	ServerNodeID              string   `json:"server_node_id,omitempty"`
+	ServerInterface           string   `json:"server_interface,omitempty"`
+	DomainID                  string   `json:"domain_id,omitempty"`
+	Description               string   `json:"description,omitempty"`
+	Role                      string   `json:"role,omitempty"`
+	NodeType                  string   `json:"node_type,omitempty"`
+	Interface                 string   `json:"interface,omitempty"`
+	ConfigType                string   `json:"config_type,omitempty"`
+	ReloadMethod              string   `json:"reload_method,omitempty"`
+	NatterCommand             []string `json:"natter_command,omitempty"`
+	NatterTimeoutSeconds      int      `json:"natter_timeout_seconds,omitempty"`
+	NatterStopWireGuard       bool     `json:"natter_stop_wireguard,omitempty"`
+	NatterWireGuardControl    string   `json:"natter_wireguard_control,omitempty"`
+	NatterRestartDelaySeconds int      `json:"natter_restart_delay_seconds,omitempty"`
+	Limit                     int      `json:"limit,omitempty"`
 }
 
 type Response struct {

@@ -219,13 +219,41 @@ func adminList(flags addrTokenFlags, kind string) {
 
 func agentCmd(args []string) {
 	fs := flag.NewFlagSet("wgnh agent", flag.ExitOnError)
-	configPath := fs.String("config", "", "agent config json")
+	configPath := fs.String("config", "", "optional agent config json")
+	daemonAddr := fs.String("daemon-addr", "", "daemon TCP address; enough for normal Web UI enrollment")
+	joinCode := fs.String("join-code", "", "optional domain join code")
+	nodeName := fs.String("node-name", "", "optional node display name")
+	statePath := fs.String("state-path", "", "local generated identity path")
+	retrySeconds := fs.Int("retry-seconds", 0, "retry interval in seconds")
+	dryRun := fs.Bool("dry-run", false, "report actions without changing WireGuard config")
 	_ = fs.Parse(args)
-	if *configPath == "" {
-		log.Fatal("--config is required")
+	var cfg agent.Config
+	var err error
+	if *configPath != "" {
+		cfg, err = agent.LoadConfig(*configPath)
+		must(err)
 	}
-	cfg, err := agent.LoadConfig(*configPath)
-	must(err)
+	if *daemonAddr != "" {
+		cfg.DaemonAddr = *daemonAddr
+	}
+	if *joinCode != "" {
+		cfg.JoinCode = *joinCode
+	}
+	if *nodeName != "" {
+		cfg.NodeName = *nodeName
+	}
+	if *statePath != "" {
+		cfg.StatePath = *statePath
+	}
+	if *retrySeconds > 0 {
+		cfg.RetrySeconds = *retrySeconds
+	}
+	if *dryRun {
+		cfg.DryRun = true
+	}
+	if cfg.DaemonAddr == "" && cfg.DaemonURL == "" {
+		log.Fatal("--daemon-addr is required when --config does not set daemon_addr")
+	}
 	a, err := agent.New(cfg)
 	must(err)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

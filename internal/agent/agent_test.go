@@ -97,3 +97,22 @@ func TestApplyRemoteNodeConfigEnablesClientMonitor(t *testing.T) {
 		t.Fatalf("unexpected wireguard config: %#v", a.config.WireGuard)
 	}
 }
+
+func TestApplyRemoteNodeConfigAppliesNatterCommand(t *testing.T) {
+	a := &Agent{}
+	a.applyRemoteNodeConfig(store.Node{
+		Role:                      "server",
+		Interface:                 "wg0",
+		NatterCommand:             []string{"python3", "/opt/Natter/natter.py", "--map-only"},
+		NatterTimeoutSeconds:      45,
+		NatterStopWireGuard:       true,
+		NatterWireGuardControl:    "ifup",
+		NatterRestartDelaySeconds: 2,
+	})
+	if !sameStrings(a.config.Natter.Command, []string{"python3", "/opt/Natter/natter.py", "--map-only"}) {
+		t.Fatalf("unexpected natter command: %#v", a.config.Natter.Command)
+	}
+	if a.config.Natter.TimeoutSeconds != 45 || !a.config.Natter.StopWireGuard || a.config.Natter.WireGuardControlMethod != "ifup" || a.config.Natter.RestartDelaySeconds != 2 {
+		t.Fatalf("unexpected natter config: %#v", a.config.Natter)
+	}
+}

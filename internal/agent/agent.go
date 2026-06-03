@@ -398,9 +398,43 @@ func (a *Agent) applyRemoteNodeConfig(node store.Node) {
 		a.config.Monitor.Enabled = true
 		changed = true
 	}
+	if len(node.NatterCommand) > 0 {
+		if !sameStrings(a.config.Natter.Command, node.NatterCommand) {
+			a.config.Natter.Command = append([]string(nil), node.NatterCommand...)
+			changed = true
+		}
+		if node.NatterTimeoutSeconds > 0 && a.config.Natter.TimeoutSeconds != node.NatterTimeoutSeconds {
+			a.config.Natter.TimeoutSeconds = node.NatterTimeoutSeconds
+			changed = true
+		}
+		if node.NatterStopWireGuard != a.config.Natter.StopWireGuard {
+			a.config.Natter.StopWireGuard = node.NatterStopWireGuard
+			changed = true
+		}
+		if node.NatterWireGuardControl != "" && a.config.Natter.WireGuardControlMethod != node.NatterWireGuardControl {
+			a.config.Natter.WireGuardControlMethod = node.NatterWireGuardControl
+			changed = true
+		}
+		if node.NatterRestartDelaySeconds > 0 && a.config.Natter.RestartDelaySeconds != node.NatterRestartDelaySeconds {
+			a.config.Natter.RestartDelaySeconds = node.NatterRestartDelaySeconds
+			changed = true
+		}
+	}
 	if changed {
 		log.Printf("agent applied remote config role=%s interface=%s config_type=%s reload_method=%s", node.Role, node.Interface, node.ConfigType, node.ReloadMethod)
 	}
+}
+
+func sameStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (a *Agent) ensureWireGuardInterface(name string) WGInterface {
