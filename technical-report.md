@@ -140,14 +140,48 @@ daemon 生成 domain 记录，并显示该 domain 下的节点、绑定、自动
 当某个节点在 domain 中被设置为 server：
 
 1. daemon 向 server agent 下发 `natter.run`。
-2. server agent 执行 NAT 映射探测命令。
-3. server agent 上报公网 IP 和端口。
-4. daemon 更新该 domain 下相关 binding 的 endpoint。
-5. daemon 向 client agent 下发 endpoint 应用命令。
+2. server agent 按需停止对应 WireGuard 接口。
+3. server agent 执行 NAT 映射探测命令。
+4. server agent 启动对应 WireGuard 接口。
+5. server agent 上报公网 IP 和端口。
+6. daemon 更新该 domain 下相关 binding 的 endpoint。
+7. daemon 向 client agent 下发 endpoint 应用命令。
 
-如果 server 本地 WireGuard 端口被占用，agent 可以按配置临时停止对应 WireGuard 接口，完成 NAT 探测后再启动接口。
+推荐使用 Natter 的 `--map-only` 模式只获取 NAT 后的公网地址和端口，不启动转发、不保活。例如 OpenWrt server 节点的探测命令可以配置为：
 
-### 3.4 Client 节点更新 Endpoint
+```bash
+python3 /root/repo/Natter-new/natter.py -u -i pppoe-wan -b 51820 --map-only
+```
+
+其中：
+
+- `-u` 表示 UDP。
+- `-i pppoe-wan` 表示通过 WAN 出口探测。
+- `-b 51820` 表示以 WireGuard 监听端口作为本地端口。
+- `--map-only` 表示只输出映射结果后退出。
+
+如果 WireGuard 已经占用了该端口，server agent 可以在执行 Natter 前临时停止对应 WireGuard 接口，拿到映射后再启动接口。
+
+### 3.4 OpenWrt WireGuard 接口控制
+
+OpenWrt 节点不需要暴露复杂的 reload/control 选项给普通用户。用户只选择节点类型为 `OpenWrt` 后，系统应自动使用 OpenWrt 的网络接口控制方式。
+
+推荐约定：
+
+- 停止接口：`ifdown <wg-interface>`
+- 启动接口：`ifup <wg-interface>`
+- 更新 peer endpoint 后刷新接口：优先使用 `ifdown <wg-interface>` 再 `ifup <wg-interface>`
+
+例如接口名为 `wg0` 时：
+
+```bash
+ifdown wg0
+ifup wg0
+```
+
+在 OpenWrt 上，WireGuard 接口通常作为 network interface 管理，因此使用 `ifdown/ifup` 比直接调用 `wg-quick` 更符合系统模型。
+
+### 3.5 Client 节点更新 Endpoint
 
 当 daemon 获得 server 的新公网 endpoint 后：
 
