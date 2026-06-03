@@ -34,6 +34,7 @@ type Node struct {
 	Name                      string   `json:"name"`
 	Role                      string   `json:"role"`
 	TokenHash                 string   `json:"token_hash"`
+	TokenFingerprint          string   `json:"token_fingerprint,omitempty"`
 	DomainID                  string   `json:"domain_id"`
 	Approved                  bool     `json:"approved"`
 	NodeType                  string   `json:"node_type"`
@@ -186,7 +187,7 @@ func (s *Store) saveLocked() error {
 func (s *Store) CreateNode(id, name, role, token string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.data.Nodes[id] = Node{ID: id, Name: name, Role: role, TokenHash: auth.HashToken(token), Approved: true, Status: "offline"}
+	s.data.Nodes[id] = Node{ID: id, Name: name, Role: role, TokenHash: auth.HashToken(token), TokenFingerprint: auth.TokenFingerprint(token), Approved: true, Status: "offline"}
 	s.addEventLocked("node.upserted", "info", id, "", "Node saved", nil)
 	return s.saveLocked()
 }
@@ -291,13 +292,14 @@ func (s *Store) UpsertJoinedNode(domainID, nodeID, name, token string, meta map[
 		return existing, false, s.saveLocked()
 	}
 	node := Node{
-		ID:         nodeID,
-		Name:       name,
-		TokenHash:  auth.HashToken(token),
-		DomainID:   domainID,
-		Approved:   false,
-		Status:     "pending",
-		LastSeenAt: protocol.NowISO(),
+		ID:               nodeID,
+		Name:             name,
+		TokenHash:        auth.HashToken(token),
+		TokenFingerprint: auth.TokenFingerprint(token),
+		DomainID:         domainID,
+		Approved:         false,
+		Status:           "pending",
+		LastSeenAt:       protocol.NowISO(),
 	}
 	if node.Name == "" {
 		node.Name = node.ID
@@ -333,12 +335,13 @@ func (s *Store) UpsertPendingNode(nodeID, name, token string, meta map[string]an
 		return existing, false, s.saveLocked()
 	}
 	node := Node{
-		ID:         nodeID,
-		Name:       name,
-		TokenHash:  auth.HashToken(token),
-		Approved:   false,
-		Status:     "pending",
-		LastSeenAt: protocol.NowISO(),
+		ID:               nodeID,
+		Name:             name,
+		TokenHash:        auth.HashToken(token),
+		TokenFingerprint: auth.TokenFingerprint(token),
+		Approved:         false,
+		Status:           "pending",
+		LastSeenAt:       protocol.NowISO(),
 	}
 	if node.Name == "" {
 		node.Name = node.ID
@@ -445,6 +448,39 @@ func (s *Store) AddBinding(b Binding) error {
 	b.Enabled = true
 	s.data.Bindings[b.ID] = b
 	s.addEventLocked("binding.upserted", "info", "", b.ID, "Binding saved", nil)
+	return s.saveLocked()
+}
+
+func (s *Store) DeleteNode(nodeID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if nodeID == "" {
+		return errors.New("node id is required")
+	}
+	node, ok := s.data.Nodes[nodeID]
+	if !ok {
+		return errors.New("node not found")
+	}
+	delete(s.data.Nodes, nodeID)
+	delete(s.data.Commands, nodeID)
+	for key, item := range s.data.WGInterfaces {
+		if item.NodeID == nodeID {
+			delete(s.data.WGInterfaces, key)
+		}
+	}
+	for id, binding := range s.data.Bindings {
+		if binding.ServerNodeID == nodeID || binding.ClientNodeID == nodeID {
+			delete(s.data.Bindings, id)
+		}
+	}
+	leases := s.data.EndpointLeases[:0]
+	for _, lease := range s.data.EndpointLeases {
+		if lease.ServerNodeID != nodeID {
+			leases = append(leases, lease)
+		}
+	}
+	s.data.EndpointLeases = leases
+	s.addEventLocked("node.deleted", "info", nodeID, "", "Node deleted", map[string]any{"name": node.Name})
 	return s.saveLocked()
 }
 

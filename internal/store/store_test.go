@@ -39,6 +39,10 @@ func TestStoreAuthAndCommandQueue(t *testing.T) {
 	if got == nil || got.CommandID != cmd.CommandID || got.Action != "natter.run" {
 		t.Fatalf("unexpected command: %#v", got)
 	}
+	nodes := st.Nodes()
+	if len(nodes) != 1 || nodes[0].TokenFingerprint == "" || nodes[0].TokenHash != "" {
+		t.Fatalf("expected public token fingerprint without hash: %#v", nodes)
+	}
 }
 
 func TestDisplayStatusMarksStaleNodeOffline(t *testing.T) {
@@ -108,6 +112,58 @@ func TestReconcileAutoBindingsCreatesClientEndpointBinding(t *testing.T) {
 	}
 	if len(created) != 0 {
 		t.Fatalf("expected idempotent reconcile, got %#v", created)
+	}
+}
+
+func TestDeleteNodeRemovesRelatedState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateDomain("home", "Home", "join-home", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.UpsertJoinedNode("home", "server-a", "Server A", "server-token", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.UpsertJoinedNode("home", "client-b", "Client B", "client-token", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ApproveNode("server-a", NodeApproval{Role: "server", Interface: "wg0"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ApproveNode("client-b", NodeApproval{Role: "client", Interface: "wg0"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpdateWGInterfaces("server-a", []WGInterface{{Name: "wg0", PublicKey: "server-key"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddBinding(Binding{ID: "binding-1", ServerNodeID: "server-a", ServerInterface: "wg0", ClientNodeID: "client-b", ClientInterface: "wg0", PeerPublicKey: "server-key"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.QueueCommand("server-a", protocol.NewCommand("natter.run", nil)); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DeleteNode("server-a"); err != nil {
+		t.Fatal(err)
+	}
+	for _, node := range st.Nodes() {
+		if node.ID == "server-a" {
+			t.Fatalf("deleted node still exists: %#v", node)
+		}
+	}
+	if len(st.Bindings()) != 0 {
+		t.Fatalf("expected related bindings deleted: %#v", st.Bindings())
+	}
+	if len(st.WGInterfaces()) != 0 {
+		t.Fatalf("expected related wg inventory deleted: %#v", st.WGInterfaces())
+	}
+	if _, err := st.NextCommand("server-a"); err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Nodes()) != 1 || st.Nodes()[0].ID != "client-b" {
+		t.Fatalf("unrelated node should remain: %#v", st.Nodes())
 	}
 }
 

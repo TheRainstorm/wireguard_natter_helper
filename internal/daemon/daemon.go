@@ -101,6 +101,8 @@ func (s *Server) handle(req rpc.Request, remote string) rpc.Response {
 		return s.adminCreateDomain(req)
 	case "admin.approve_node":
 		return s.adminApproveNode(req)
+	case "admin.delete_node":
+		return s.adminDeleteNode(req)
 	case "admin.bindings":
 		if err := s.authenticateAdmin(req); err != nil {
 			return rpc.Response{OK: false, Error: err.Error()}
@@ -252,6 +254,21 @@ func (s *Server) adminApproveNode(req rpc.Request) rpc.Response {
 	s.reconcileAutoBindings()
 	clean := sanitizeNode(node)
 	return rpc.Response{OK: true, Approved: true, Nodes: []store.Node{clean}}
+}
+
+func (s *Server) adminDeleteNode(req rpc.Request) rpc.Response {
+	if err := s.authenticateAdmin(req); err != nil {
+		return rpc.Response{OK: false, Error: err.Error()}
+	}
+	if req.NodeID == "" {
+		return rpc.Response{OK: false, Error: "node_id is required"}
+	}
+	if err := s.store.DeleteNode(req.NodeID); err != nil {
+		return rpc.Response{OK: false, Error: err.Error()}
+	}
+	log.Printf("node deleted node=%s", req.NodeID)
+	s.reconcileAutoBindings()
+	return rpc.Response{OK: true}
 }
 
 func (s *Server) syncWireGuardInventory(nodeID string, meta map[string]any) {

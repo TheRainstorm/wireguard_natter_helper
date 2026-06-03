@@ -21,6 +21,11 @@ func HashToken(token string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+func TokenFingerprint(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:5])
+}
+
 func VerifyToken(token, expectedHash string) bool {
 	actual := HashToken(token)
 	return subtle.ConstantTimeCompare([]byte(actual), []byte(expectedHash)) == 1

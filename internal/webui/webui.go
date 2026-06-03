@@ -58,6 +58,7 @@ func (s *Server) ListenAndServe() error {
 	mux.HandleFunc("/api/summary", s.apiSummary)
 	mux.HandleFunc("/api/create-domain", s.apiCreateDomain)
 	mux.HandleFunc("/api/approve-node", s.apiApproveNode)
+	mux.HandleFunc("/api/delete-node", s.apiDeleteNode)
 	mux.HandleFunc("/api/run-natter", s.apiRunNatter)
 	log.Printf("wgnh web ui listening on http://%s", s.addr)
 	return http.ListenAndServe(s.addr, mux)
@@ -157,6 +158,40 @@ func (s *Server) apiApproveNode(w http.ResponseWriter, r *http.Request) {
 		NatterWireGuardControl:    strings.TrimSpace(req.NatterWireGuardControl),
 		NatterRestartDelaySeconds: req.NatterRestartDelaySeconds,
 		Name:                      strings.TrimSpace(req.Name),
+	}, 10*time.Second)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) apiDeleteNode(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"ok": false, "error": "method not allowed"})
+		return
+	}
+	var req struct {
+		daemonCredentials
+		NodeID string `json:"node_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	creds := s.withDefaults(req.daemonCredentials)
+	if err := validateCredentials(creds); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	if strings.TrimSpace(req.NodeID) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "node_id is required"})
+		return
+	}
+	resp, err := rpc.Call(r.Context(), creds.DaemonAddr, rpc.Request{
+		Kind:       "admin.delete_node",
+		AdminToken: creds.AdminToken,
+		NodeID:     strings.TrimSpace(req.NodeID),
 	}, 10*time.Second)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"ok": false, "error": err.Error()})
@@ -501,6 +536,7 @@ const pageHTML = `<!doctype html>
       cursor: pointer;
     }
     button.secondary { background: var(--accent-2); }
+    button.danger { background: var(--danger); }
     button.ghost {
       color: var(--accent-2);
       background: #e6f4f1;
@@ -543,11 +579,12 @@ const pageHTML = `<!doctype html>
     }
     .approval {
       display: grid;
-      grid-template-columns: repeat(7, minmax(120px, 1fr)) auto;
+      grid-template-columns: repeat(7, minmax(120px, 1fr)) auto auto;
       gap: 8px;
-      min-width: 980px;
+      min-width: 1060px;
     }
     .node-name { display: grid; gap: 5px; }
+    .node-ref { display: grid; gap: 3px; min-width: 170px; white-space: normal; }
     .check { display: inline-flex; align-items: center; gap: 6px; min-height: 38px; color: var(--text); font-size: 13px; }
     .mini { font-size: 12px; color: var(--muted); }
     .muted { color: var(--muted); }
@@ -864,6 +901,27 @@ const pageHTML = `<!doctype html>
       }
     }
 
+    async function deleteNode(node, btn) {
+      const label = nodeLabel(node);
+      if (!confirm('删除节点 ' + label + '？相关 WireGuard inventory、命令队列和绑定也会被删除。')) {
+        return;
+      }
+      btn.disabled = true;
+      try {
+        await postJSON('/api/delete-node', {
+          ...credentials(),
+          node_id: node.id
+        });
+        nodeFormDirty = false;
+        toast('节点已删除: ' + label);
+        await refresh(false);
+      } catch (err) {
+        toast('删除失败: ' + err.message);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
     async function postJSON(url, body) {
       const res = await fetch(url, {
         method: 'POST',
@@ -885,10 +943,11 @@ const pageHTML = `<!doctype html>
       document.getElementById('statBindings').textContent = data.stats.bindings;
       document.getElementById('statErrors').textContent = data.stats.errors;
       renderDomains(data.domains || []);
+      const nodeMap = buildNodeMap(data.nodes || []);
       renderNodes(data.nodes || [], data.domains || []);
-      renderInterfaces(data.wireguard_interfaces || []);
-      renderBindings(data.bindings || []);
-      renderEvents(data.events || []);
+      renderInterfaces(data.wireguard_interfaces || [], nodeMap);
+      renderBindings(data.bindings || [], nodeMap);
+      renderEvents(data.events || [], nodeMap);
     }
 
     function renderDomains(domains) {
@@ -912,7 +971,7 @@ const pageHTML = `<!doctype html>
       }
       body.innerHTML = nodes.map((node, idx) => {
         return '<tr>'
-          + '<td><div class="node-name"><code>' + escapeHTML(node.id) + '</code><span class="mini">' + escapeHTML(node.name || '') + '</span></div></td>'
+          + '<td><div class="node-name"><strong>' + escapeHTML(nodeLabel(node)) + '</strong><span class="mini">' + escapeHTML(nodeSubLabel(node)) + '</span></div></td>'
           + '<td><code>' + escapeHTML(node.domain_id || '-') + '</code></td>'
           + '<td>' + escapeHTML(node.role || '-') + '</td>'
           + '<td><span class="badge ' + escapeAttr(node.status) + '">' + escapeHTML(node.status || '-') + '</span> ' + (node.approved ? '<span class="badge online">approved</span>' : '<span class="badge warning">pending</span>') + '</td>'
@@ -933,6 +992,10 @@ const pageHTML = `<!doctype html>
       body.querySelectorAll('button[data-approve]').forEach(btn => {
         const idx = Number(btn.dataset.approve);
         btn.addEventListener('click', () => approveNode(nodes[idx], idx, btn));
+      });
+      body.querySelectorAll('button[data-delete-node]').forEach(btn => {
+        const idx = Number(btn.dataset.deleteNode);
+        btn.addEventListener('click', () => deleteNode(nodes[idx], btn));
       });
     }
 
@@ -959,6 +1022,7 @@ const pageHTML = `<!doctype html>
         + '<input data-node-form id="' + id + 'natterRestartDelay" type="number" min="0" placeholder="restart delay" value="' + escapeValue(node.natter_restart_delay_seconds || 0) + '">'
         + '</div>'
         + '<button data-approve="' + idx + '">' + (node.approved ? '保存配置' : '允许加入') + '</button>'
+        + '<button class="danger" data-delete-node="' + idx + '">删除</button>'
         + '</div>';
     }
 
@@ -994,7 +1058,7 @@ const pageHTML = `<!doctype html>
       }
     }
 
-    function renderInterfaces(interfaces) {
+    function renderInterfaces(interfaces, nodeMap) {
       const body = document.getElementById('interfacesBody');
       if (!interfaces.length) {
         body.innerHTML = '<tr><td colspan="7" class="empty">暂无 WireGuard inventory。agent 需要能执行 wg show，或至少配置 wireguard.name 后等待下一次心跳。</td></tr>';
@@ -1002,8 +1066,9 @@ const pageHTML = `<!doctype html>
       }
       body.innerHTML = interfaces.map(item => {
         const peers = (item.peers || []).map(peer => '<code>' + escapeHTML(shortKey(peer)) + '</code>').join(' ');
+        const node = nodeMap[item.node_id] || {id: item.node_id};
         return '<tr>'
-          + '<td><code>' + escapeHTML(item.node_id) + '</code></td>'
+          + '<td>' + nodeRef(node) + '</td>'
           + '<td><code>' + escapeHTML(item.name) + '</code></td>'
           + '<td><code>' + escapeHTML(shortKey(item.public_key || '')) + '</code></td>'
           + '<td>' + (item.listen_port ? escapeHTML(item.listen_port) : '<span class="muted">-</span>') + '</td>'
@@ -1014,7 +1079,7 @@ const pageHTML = `<!doctype html>
       }).join('');
     }
 
-    function renderBindings(bindings) {
+    function renderBindings(bindings, nodeMap) {
       const body = document.getElementById('bindingsBody');
       if (!bindings.length) {
         body.innerHTML = '<tr><td colspan="6" class="empty">暂无绑定</td></tr>';
@@ -1024,10 +1089,12 @@ const pageHTML = `<!doctype html>
         const endpoint = binding.endpoint_host
           ? '<code>' + escapeHTML(binding.endpoint_host + ':' + binding.endpoint_port) + '</code>'
           : '<span class="muted">未发布</span>';
+        const serverNode = nodeMap[binding.server_node_id] || {id: binding.server_node_id};
+        const clientNode = nodeMap[binding.client_node_id] || {id: binding.client_node_id};
         return '<tr>'
           + '<td><code>' + escapeHTML(binding.id) + '</code></td>'
-          + '<td><code>' + escapeHTML(binding.server_node_id) + '</code> / <code>' + escapeHTML(binding.server_interface) + '</code></td>'
-          + '<td><code>' + escapeHTML(binding.client_node_id) + '</code> / <code>' + escapeHTML(binding.client_interface) + '</code></td>'
+          + '<td>' + nodeRef(serverNode) + ' / <code>' + escapeHTML(binding.server_interface) + '</code></td>'
+          + '<td>' + nodeRef(clientNode) + ' / <code>' + escapeHTML(binding.client_interface) + '</code></td>'
           + '<td>' + endpoint + '</td>'
           + '<td><span class="badge">' + escapeHTML(binding.config_type) + '</span> <span class="muted">' + escapeHTML(binding.reload_method) + '</span></td>'
           + '<td><button data-binding="' + idx + '">触发 natter</button></td>'
@@ -1039,7 +1106,7 @@ const pageHTML = `<!doctype html>
       });
     }
 
-    function renderEvents(events) {
+    function renderEvents(events, nodeMap) {
       const body = document.getElementById('eventsBody');
       if (!events.length) {
         body.innerHTML = '<tr><td colspan="7" class="empty">暂无事件</td></tr>';
@@ -1049,7 +1116,7 @@ const pageHTML = `<!doctype html>
         + '<td>' + escapeHTML(event.created_at) + '</td>'
         + '<td><span class="' + escapeAttr(event.severity) + '">' + escapeHTML(event.severity) + '</span></td>'
         + '<td><code>' + escapeHTML(event.type) + '</code></td>'
-        + '<td>' + escapeHTML(event.node_id) + '</td>'
+        + '<td>' + (event.node_id ? nodeRef(nodeMap[event.node_id] || {id: event.node_id}) : '') + '</td>'
         + '<td>' + escapeHTML(event.binding_id) + '</td>'
         + '<td class="wrap">' + escapeHTML(event.message) + '</td>'
         + '<td class="wrap"><code>' + escapeHTML(JSON.stringify(event.payload || {})) + '</code></td>'
@@ -1069,6 +1136,32 @@ const pageHTML = `<!doctype html>
 
     function field(id) {
       return document.getElementById(id);
+    }
+
+    function buildNodeMap(nodes) {
+      const out = {};
+      for (const node of nodes) out[node.id] = node;
+      return out;
+    }
+
+    function nodeLabel(node) {
+      const name = String(node && node.name || '').trim();
+      if (name && name !== node.id) return name;
+      const fp = String(node && node.token_fingerprint || '').trim();
+      if (fp) return fp;
+      return shortKey(node && node.id || '');
+    }
+
+    function nodeSubLabel(node) {
+      const fp = String(node && node.token_fingerprint || '').trim();
+      const id = String(node && node.id || '').trim();
+      if (fp && id) return 'token ' + fp + ' · ' + id;
+      if (fp) return 'token ' + fp;
+      return id;
+    }
+
+    function nodeRef(node) {
+      return '<span class="node-ref"><strong>' + escapeHTML(nodeLabel(node)) + '</strong><span class="mini">' + escapeHTML(nodeSubLabel(node)) + '</span></span>';
     }
 
     function selected(value, current) {
