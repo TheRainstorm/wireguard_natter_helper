@@ -1147,16 +1147,11 @@ const pageHTML = `<!doctype html>
     function nodeLabel(node) {
       const name = String(node && node.name || '').trim();
       if (name && name !== node.id) return name;
-      const fp = String(node && node.token_fingerprint || '').trim();
-      if (fp) return fp;
       return shortKey(node && node.id || '');
     }
 
     function nodeSubLabel(node) {
-      const fp = String(node && node.token_fingerprint || '').trim();
       const id = String(node && node.id || '').trim();
-      if (fp && id) return 'token ' + fp + ' · ' + id;
-      if (fp) return 'token ' + fp;
       return id;
     }
 

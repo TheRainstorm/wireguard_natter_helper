@@ -40,8 +40,8 @@ func TestStoreAuthAndCommandQueue(t *testing.T) {
 		t.Fatalf("unexpected command: %#v", got)
 	}
 	nodes := st.Nodes()
-	if len(nodes) != 1 || nodes[0].TokenFingerprint == "" || nodes[0].TokenHash != "" {
-		t.Fatalf("expected public token fingerprint without hash: %#v", nodes)
+	if len(nodes) != 1 || nodes[0].TokenHash != "" {
+		t.Fatalf("expected public nodes to hide token hash: %#v", nodes)
 	}
 }
 
