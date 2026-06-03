@@ -117,7 +117,9 @@ func (s *Server) apiApproveNode(w http.ResponseWriter, r *http.Request) {
 		Interface                 string   `json:"interface"`
 		ConfigType                string   `json:"config_type"`
 		ReloadMethod              string   `json:"reload_method"`
+		NatterManaged             bool     `json:"natter_managed"`
 		NatterCommand             []string `json:"natter_command"`
+		NatterConfigured          bool     `json:"natter_configured"`
 		NatterTimeoutSeconds      int      `json:"natter_timeout_seconds"`
 		NatterStopWireGuard       bool     `json:"natter_stop_wireguard"`
 		NatterWireGuardControl    string   `json:"natter_wireguard_control"`
@@ -147,6 +149,8 @@ func (s *Server) apiApproveNode(w http.ResponseWriter, r *http.Request) {
 		Interface:                 strings.TrimSpace(req.Interface),
 		ConfigType:                strings.TrimSpace(req.ConfigType),
 		ReloadMethod:              strings.TrimSpace(req.ReloadMethod),
+		NatterManaged:             req.NatterManaged,
+		NatterConfigured:          req.NatterConfigured,
 		NatterCommand:             req.NatterCommand,
 		NatterTimeoutSeconds:      req.NatterTimeoutSeconds,
 		NatterStopWireGuard:       req.NatterStopWireGuard,
@@ -582,6 +586,7 @@ const pageHTML = `<!doctype html>
       </div>
       <div class="toolbar">
         <button class="secondary" id="refreshBtn">刷新</button>
+        <button class="ghost" id="pauseRefreshBtn">暂停自动刷新</button>
       </div>
     </div>
   </header>
@@ -683,16 +688,20 @@ const pageHTML = `<!doctype html>
     const adminTokenInput = document.getElementById('adminToken');
     const connectBtn = document.getElementById('connectBtn');
     const refreshBtn = document.getElementById('refreshBtn');
+    const pauseRefreshBtn = document.getElementById('pauseRefreshBtn');
     const forgetBtn = document.getElementById('forgetBtn');
     const showTokenBtn = document.getElementById('showTokenBtn');
     const createDomainBtn = document.getElementById('createDomainBtn');
     let refreshTimer = null;
+    let autoRefreshPaused = false;
+    let nodeFormDirty = false;
 
     daemonAddrInput.value = localStorage.getItem(storage.daemonAddr) || daemonAddrInput.value || defaultDaemonAddr;
     adminTokenInput.value = localStorage.getItem(storage.adminToken) || '';
 
     connectBtn.addEventListener('click', () => refresh(true));
     refreshBtn.addEventListener('click', () => refresh(false));
+    pauseRefreshBtn.addEventListener('click', toggleAutoRefresh);
     forgetBtn.addEventListener('click', forgetConnection);
     showTokenBtn.addEventListener('click', toggleToken);
     createDomainBtn.addEventListener('click', createDomain);
@@ -720,6 +729,7 @@ const pageHTML = `<!doctype html>
       adminTokenInput.value = '';
       daemonAddrInput.value = defaultDaemonAddr || '';
       clearRefreshTimer();
+      nodeFormDirty = false;
       document.getElementById('subtitle').textContent = '已清除浏览器保存的连接信息。';
       toast('已忘记连接信息');
     }
@@ -730,7 +740,13 @@ const pageHTML = `<!doctype html>
       showTokenBtn.textContent = showing ? '显示 Token' : '隐藏 Token';
     }
 
-    async function refresh(shouldSave) {
+    async function refresh(shouldSave, options) {
+      options = options || {};
+      if (options.auto && (autoRefreshPaused || nodeFormDirty || isEditingNodeConfig())) {
+        scheduleRefresh();
+        document.getElementById('subtitle').textContent = autoRefreshPaused ? '自动刷新已暂停。' : '正在编辑节点配置，已跳过本次自动刷新。';
+        return;
+      }
       const creds = credentials();
       if (!creds.daemon_addr) {
         toast('请先输入 daemon TCP 地址');
@@ -818,12 +834,17 @@ const pageHTML = `<!doctype html>
         reload_method: field(prefix + 'reloadMethod').value,
         name: field(prefix + 'name').value.trim()
       };
-      if (role === 'server' && natterCommand.length) {
+      if (role === 'server') {
+        payload.natter_managed = true;
+        payload.natter_configured = natterCommand.length > 0;
         payload.natter_command = natterCommand;
         payload.natter_timeout_seconds = numberValue(field(prefix + 'natterTimeout').value);
         payload.natter_stop_wireguard = field(prefix + 'natterStop').checked;
         payload.natter_wireguard_control = field(prefix + 'natterControl').value;
         payload.natter_restart_delay_seconds = numberValue(field(prefix + 'natterRestartDelay').value);
+      } else {
+        payload.natter_managed = true;
+        payload.natter_configured = false;
       }
       if (!payload.domain_id || !payload.role || !payload.interface) {
         toast('审批需要选择 domain、角色并填写接口');
@@ -832,7 +853,8 @@ const pageHTML = `<!doctype html>
       btn.disabled = true;
       try {
         await postJSON('/api/approve-node', payload);
-        toast('节点已审批: ' + node.id);
+        nodeFormDirty = false;
+        toast((node.approved ? '节点配置已保存: ' : '节点已审批: ') + node.id);
         await refresh(false);
       } catch (err) {
         toast('审批失败: ' + err.message);
@@ -853,7 +875,7 @@ const pageHTML = `<!doctype html>
     }
 
     function render(data) {
-      document.getElementById('subtitle').innerHTML = 'daemon <code>' + escapeHTML(data.daemon_addr) + '</code> · ' + escapeHTML(data.generated_at) + ' · 自动刷新 15s';
+      document.getElementById('subtitle').innerHTML = 'daemon <code>' + escapeHTML(data.daemon_addr) + '</code> · ' + escapeHTML(data.generated_at) + ' · ' + (autoRefreshPaused ? '自动刷新已暂停' : '自动刷新 15s');
       document.getElementById('statDomains').textContent = data.stats.domains;
       document.getElementById('statNodes').textContent = data.stats.nodes;
       document.getElementById('statOnline').textContent = data.stats.online;
@@ -888,7 +910,6 @@ const pageHTML = `<!doctype html>
         return;
       }
       body.innerHTML = nodes.map((node, idx) => {
-        const pending = !node.approved || node.status === 'pending';
         return '<tr>'
           + '<td><div class="node-name"><code>' + escapeHTML(node.id) + '</code><span class="mini">' + escapeHTML(node.name || '') + '</span></div></td>'
           + '<td><code>' + escapeHTML(node.domain_id || '-') + '</code></td>'
@@ -897,9 +918,13 @@ const pageHTML = `<!doctype html>
           + '<td>' + escapeHTML(node.node_type || node.platform || '-') + '<div class="mini">' + escapeHTML(node.agent_version || '') + '</div></td>'
           + '<td><code>' + escapeHTML(node.interface || '-') + '</code><div class="mini">' + escapeHTML(node.config_type || '') + ' ' + escapeHTML(node.reload_method || '') + '</div></td>'
           + '<td>' + escapeHTML(node.last_seen_at || '-') + '</td>'
-          + '<td>' + (pending ? approvalControls(node, idx, domains) : '<span class="muted">无需操作</span>') + '</td>'
+          + '<td>' + approvalControls(node, idx, domains) + '</td>'
           + '</tr>';
       }).join('');
+      body.querySelectorAll('[data-node-form]').forEach(el => {
+        el.addEventListener('input', markNodeFormDirty);
+        el.addEventListener('change', markNodeFormDirty);
+      });
       body.querySelectorAll('select[data-role]').forEach(select => {
         updateNatterControls(select);
         select.addEventListener('change', () => updateNatterControls(select));
@@ -918,21 +943,21 @@ const pageHTML = `<!doctype html>
       const defaultReload = node.reload_method || (defaultNodeType === 'openwrt' ? 'ifup' : 'wg-quick-restart');
       const defaultNatterControl = node.natter_wireguard_control || (defaultNodeType === 'openwrt' ? 'ifup' : 'wg-quick');
       return '<div class="approval">'
-        + '<input id="' + id + 'name" placeholder="节点名称" value="' + escapeValue(node.name || '') + '">'
-        + '<select id="' + id + 'domain">' + domainOptions + '</select>'
-        + '<select id="' + id + 'role" data-role="' + idx + '"><option value="client"' + selected('client', node.role || 'client') + '>client</option><option value="server"' + selected('server', node.role) + '>server</option></select>'
-        + '<select id="' + id + 'nodeType"><option value="linux"' + selected('linux', defaultNodeType) + '>linux</option><option value="openwrt"' + selected('openwrt', defaultNodeType) + '>openwrt</option></select>'
-        + '<input id="' + id + 'interface" placeholder="wg0" value="' + escapeValue(node.interface || 'wg0') + '">'
-        + '<select id="' + id + 'configType"><option value="wg_conf"' + selected('wg_conf', defaultConfigType) + '>wg_conf</option><option value="openwrt_uci"' + selected('openwrt_uci', defaultConfigType) + '>openwrt_uci</option><option value="runtime"' + selected('runtime', defaultConfigType) + '>runtime</option></select>'
-        + '<select id="' + id + 'reloadMethod"><option value="wg-quick-restart"' + selected('wg-quick-restart', defaultReload) + '>wg-quick-restart</option><option value="ifup"' + selected('ifup', defaultReload) + '>ifup</option><option value="none"' + selected('none', defaultReload) + '>none</option></select>'
+        + '<input data-node-form id="' + id + 'name" placeholder="节点名称" value="' + escapeValue(node.name || '') + '">'
+        + '<select data-node-form id="' + id + 'domain">' + domainOptions + '</select>'
+        + '<select data-node-form id="' + id + 'role" data-role="' + idx + '"><option value="client"' + selected('client', node.role || 'client') + '>client</option><option value="server"' + selected('server', node.role) + '>server</option></select>'
+        + '<select data-node-form id="' + id + 'nodeType"><option value="linux"' + selected('linux', defaultNodeType) + '>linux</option><option value="openwrt"' + selected('openwrt', defaultNodeType) + '>openwrt</option></select>'
+        + '<input data-node-form id="' + id + 'interface" placeholder="wg0" value="' + escapeValue(node.interface || 'wg0') + '">'
+        + '<select data-node-form id="' + id + 'configType"><option value="wg_conf"' + selected('wg_conf', defaultConfigType) + '>wg_conf</option><option value="openwrt_uci"' + selected('openwrt_uci', defaultConfigType) + '>openwrt_uci</option><option value="runtime"' + selected('runtime', defaultConfigType) + '>runtime</option></select>'
+        + '<select data-node-form id="' + id + 'reloadMethod"><option value="wg-quick-restart"' + selected('wg-quick-restart', defaultReload) + '>wg-quick-restart</option><option value="ifup"' + selected('ifup', defaultReload) + '>ifup</option><option value="none"' + selected('none', defaultReload) + '>none</option></select>'
         + '<div id="' + id + 'natterGroup" class="natter-fields">'
-        + '<input id="' + id + 'natterCommand" placeholder="server 可填: python3 /opt/Natter/natter.py -u -i pppoe-wan -b 51820 --map-only" value="' + escapeValue((node.natter_command || []).join(' ')) + '">'
-        + '<input id="' + id + 'natterTimeout" type="number" min="1" placeholder="Natter timeout" value="' + escapeValue(node.natter_timeout_seconds || 90) + '">'
-        + '<label class="check"><input id="' + id + 'natterStop" type="checkbox" ' + (node.natter_stop_wireguard ? 'checked' : '') + '>停 WG</label>'
-        + '<select id="' + id + 'natterControl"><option value="ifup"' + selected('ifup', defaultNatterControl) + '>ifup</option><option value="wg-quick"' + selected('wg-quick', defaultNatterControl) + '>wg-quick</option><option value="systemd"' + selected('systemd', defaultNatterControl) + '>systemd</option></select>'
-        + '<input id="' + id + 'natterRestartDelay" type="number" min="0" placeholder="restart delay" value="' + escapeValue(node.natter_restart_delay_seconds || 0) + '">'
+        + '<input data-node-form id="' + id + 'natterCommand" placeholder="server 可填: python3 /opt/Natter/natter.py -u -i pppoe-wan -b 51820 --map-only" value="' + escapeValue((node.natter_command || []).join(' ')) + '">'
+        + '<input data-node-form id="' + id + 'natterTimeout" type="number" min="1" placeholder="Natter timeout" value="' + escapeValue(node.natter_timeout_seconds || 90) + '">'
+        + '<label class="check"><input data-node-form id="' + id + 'natterStop" type="checkbox" ' + (node.natter_stop_wireguard ? 'checked' : '') + '>停 WG</label>'
+        + '<select data-node-form id="' + id + 'natterControl"><option value="ifup"' + selected('ifup', defaultNatterControl) + '>ifup</option><option value="wg-quick"' + selected('wg-quick', defaultNatterControl) + '>wg-quick</option><option value="systemd"' + selected('systemd', defaultNatterControl) + '>systemd</option></select>'
+        + '<input data-node-form id="' + id + 'natterRestartDelay" type="number" min="0" placeholder="restart delay" value="' + escapeValue(node.natter_restart_delay_seconds || 0) + '">'
         + '</div>'
-        + '<button data-approve="' + idx + '">允许加入</button>'
+        + '<button data-approve="' + idx + '">' + (node.approved ? '保存配置' : '允许加入') + '</button>'
         + '</div>';
     }
 
@@ -940,6 +965,32 @@ const pageHTML = `<!doctype html>
       const group = field('approve-' + select.dataset.role + '-natterGroup');
       if (!group) return;
       group.hidden = select.value !== 'server';
+    }
+
+    function markNodeFormDirty() {
+      nodeFormDirty = true;
+      if (!autoRefreshPaused) {
+        document.getElementById('subtitle').textContent = '正在编辑节点配置，自动刷新会暂时跳过。';
+      }
+    }
+
+    function isEditingNodeConfig() {
+      const active = document.activeElement;
+      return !!active && !!active.closest && !!active.closest('#nodesBody');
+    }
+
+    function toggleAutoRefresh() {
+      autoRefreshPaused = !autoRefreshPaused;
+      pauseRefreshBtn.textContent = autoRefreshPaused ? '恢复自动刷新' : '暂停自动刷新';
+      if (autoRefreshPaused) {
+        clearRefreshTimer();
+        document.getElementById('subtitle').textContent = '自动刷新已暂停。';
+        toast('自动刷新已暂停');
+      } else {
+        nodeFormDirty = false;
+        toast('自动刷新已恢复');
+        refresh(false);
+      }
     }
 
     function renderInterfaces(interfaces) {
@@ -1082,7 +1133,9 @@ const pageHTML = `<!doctype html>
 
     function scheduleRefresh() {
       clearRefreshTimer();
-      refreshTimer = setTimeout(() => refresh(false), 15000);
+      if (!autoRefreshPaused) {
+        refreshTimer = setTimeout(() => refresh(false, {auto: true}), 15000);
+      }
     }
 
     function clearRefreshTimer() {
@@ -1095,6 +1148,7 @@ const pageHTML = `<!doctype html>
     function setBusy(busy) {
       connectBtn.disabled = busy;
       refreshBtn.disabled = busy;
+      pauseRefreshBtn.disabled = busy;
     }
 
     function toast(text) {

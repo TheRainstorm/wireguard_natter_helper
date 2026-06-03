@@ -236,6 +236,8 @@ func (s *Server) adminApproveNode(req rpc.Request) rpc.Response {
 		Interface:                 req.Interface,
 		ConfigType:                req.ConfigType,
 		ReloadMethod:              req.ReloadMethod,
+		NatterManaged:             req.NatterManaged,
+		NatterConfigured:          req.NatterConfigured,
 		NatterCommand:             req.NatterCommand,
 		NatterTimeoutSeconds:      req.NatterTimeoutSeconds,
 		NatterStopWireGuard:       req.NatterStopWireGuard,
@@ -246,7 +248,7 @@ func (s *Server) adminApproveNode(req rpc.Request) rpc.Response {
 	if err != nil {
 		return rpc.Response{OK: false, Error: err.Error()}
 	}
-	log.Printf("node approved node=%s domain=%s role=%s type=%s interface=%s", node.ID, node.DomainID, node.Role, node.NodeType, node.Interface)
+	log.Printf("node saved node=%s approved=%t domain=%s role=%s type=%s interface=%s", node.ID, node.Approved, node.DomainID, node.Role, node.NodeType, node.Interface)
 	s.reconcileAutoBindings()
 	clean := sanitizeNode(node)
 	return rpc.Response{OK: true, Approved: true, Nodes: []store.Node{clean}}

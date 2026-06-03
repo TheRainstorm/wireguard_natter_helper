@@ -103,6 +103,8 @@ func TestApplyRemoteNodeConfigAppliesNatterCommand(t *testing.T) {
 	a.applyRemoteNodeConfig(store.Node{
 		Role:                      "server",
 		Interface:                 "wg0",
+		NatterManaged:             true,
+		NatterConfigured:          true,
 		NatterCommand:             []string{"python3", "/opt/Natter/natter.py", "--map-only"},
 		NatterTimeoutSeconds:      45,
 		NatterStopWireGuard:       true,
@@ -114,5 +116,27 @@ func TestApplyRemoteNodeConfigAppliesNatterCommand(t *testing.T) {
 	}
 	if a.config.Natter.TimeoutSeconds != 45 || !a.config.Natter.StopWireGuard || a.config.Natter.WireGuardControlMethod != "ifup" || a.config.Natter.RestartDelaySeconds != 2 {
 		t.Fatalf("unexpected natter config: %#v", a.config.Natter)
+	}
+}
+
+func TestApplyRemoteNodeConfigClearsNatterCommand(t *testing.T) {
+	a := &Agent{config: Config{Natter: NatterConfig{
+		Command:                []string{"python3", "natter.py"},
+		TimeoutSeconds:         45,
+		StopWireGuard:          true,
+		WireGuardControlMethod: "ifup",
+		RestartDelaySeconds:    2,
+	}}}
+	a.applyRemoteNodeConfig(store.Node{Role: "server", Interface: "wg0", NatterManaged: true})
+	if len(a.config.Natter.Command) != 0 || a.config.Natter.TimeoutSeconds != 0 || a.config.Natter.StopWireGuard || a.config.Natter.WireGuardControlMethod != "" || a.config.Natter.RestartDelaySeconds != 0 {
+		t.Fatalf("expected natter config cleared: %#v", a.config.Natter)
+	}
+}
+
+func TestApplyRemoteNodeConfigPreservesLocalNatterWhenUnmanaged(t *testing.T) {
+	a := &Agent{config: Config{Natter: NatterConfig{Command: []string{"python3", "natter.py"}}}}
+	a.applyRemoteNodeConfig(store.Node{Role: "server", Interface: "wg0"})
+	if !sameStrings(a.config.Natter.Command, []string{"python3", "natter.py"}) {
+		t.Fatalf("expected local natter preserved: %#v", a.config.Natter)
 	}
 }

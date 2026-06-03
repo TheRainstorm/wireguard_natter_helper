@@ -180,6 +180,8 @@ func TestApproveNodeStoresNatterConfig(t *testing.T) {
 		Role:                      "server",
 		NodeType:                  "openwrt",
 		Interface:                 "wg0",
+		NatterManaged:             true,
+		NatterConfigured:          true,
 		NatterCommand:             []string{"python3", "/opt/Natter/natter.py", "--map-only"},
 		NatterTimeoutSeconds:      60,
 		NatterStopWireGuard:       true,
@@ -189,7 +191,136 @@ func TestApproveNodeStoresNatterConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(node.NatterCommand) != 3 || node.NatterCommand[1] != "/opt/Natter/natter.py" || node.NatterTimeoutSeconds != 60 || !node.NatterStopWireGuard || node.NatterWireGuardControl != "ifup" || node.NatterRestartDelaySeconds != 3 {
+	if !node.NatterManaged || !node.NatterConfigured || len(node.NatterCommand) != 3 || node.NatterCommand[1] != "/opt/Natter/natter.py" || node.NatterTimeoutSeconds != 60 || !node.NatterStopWireGuard || node.NatterWireGuardControl != "ifup" || node.NatterRestartDelaySeconds != 3 {
 		t.Fatalf("unexpected natter config: %#v", node)
+	}
+}
+
+func TestApproveNodeUpdatesApprovedNodeConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateDomain("home", "Home", "join-home", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.UpsertPendingNode("node", "Old Name", "node-token", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ApproveNode("node", NodeApproval{DomainID: "home", Role: "client", NodeType: "linux", Interface: "wg0"}); err != nil {
+		t.Fatal(err)
+	}
+	node, err := st.ApproveNode("node", NodeApproval{Name: "New Name", DomainID: "home", Role: "server", NodeType: "openwrt", Interface: "wg1", ConfigType: "openwrt_uci", ReloadMethod: "ifup"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.Name != "New Name" || node.Role != "server" || node.NodeType != "openwrt" || node.Interface != "wg1" || node.ConfigType != "openwrt_uci" || node.ReloadMethod != "ifup" {
+		t.Fatalf("unexpected updated node: %#v", node)
+	}
+}
+
+func TestApproveNodeClearsNatterWhenChangedToClient(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateDomain("home", "Home", "join-home", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.UpsertPendingNode("node", "Node", "node-token", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ApproveNode("node", NodeApproval{
+		DomainID:                  "home",
+		Role:                      "server",
+		Interface:                 "wg0",
+		NatterManaged:             true,
+		NatterConfigured:          true,
+		NatterCommand:             []string{"python3", "natter.py"},
+		NatterTimeoutSeconds:      60,
+		NatterStopWireGuard:       true,
+		NatterWireGuardControl:    "ifup",
+		NatterRestartDelaySeconds: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	node, err := st.ApproveNode("node", NodeApproval{Role: "client", Interface: "wg0", NatterManaged: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.NatterConfigured || len(node.NatterCommand) != 0 || node.NatterTimeoutSeconds != 0 || node.NatterStopWireGuard || node.NatterWireGuardControl != "" || node.NatterRestartDelaySeconds != 0 {
+		t.Fatalf("expected natter config cleared: %#v", node)
+	}
+}
+
+func TestApproveNodeClearsNatterWhenServerCommandRemoved(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateDomain("home", "Home", "join-home", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.UpsertPendingNode("node", "Node", "node-token", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ApproveNode("node", NodeApproval{
+		DomainID:                  "home",
+		Role:                      "server",
+		Interface:                 "wg0",
+		NatterManaged:             true,
+		NatterConfigured:          true,
+		NatterCommand:             []string{"python3", "natter.py"},
+		NatterTimeoutSeconds:      60,
+		NatterStopWireGuard:       true,
+		NatterWireGuardControl:    "ifup",
+		NatterRestartDelaySeconds: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	node, err := st.ApproveNode("node", NodeApproval{Role: "server", Interface: "wg0", NatterManaged: true, NatterConfigured: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.NatterConfigured || len(node.NatterCommand) != 0 || node.NatterTimeoutSeconds != 0 || node.NatterStopWireGuard || node.NatterWireGuardControl != "" || node.NatterRestartDelaySeconds != 0 {
+		t.Fatalf("expected natter config cleared: %#v", node)
+	}
+}
+
+func TestApproveNodeWithoutNatterManagedPreservesNatter(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateDomain("home", "Home", "join-home", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.UpsertPendingNode("node", "Node", "node-token", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ApproveNode("node", NodeApproval{
+		DomainID:                  "home",
+		Role:                      "server",
+		Interface:                 "wg0",
+		NatterManaged:             true,
+		NatterConfigured:          true,
+		NatterCommand:             []string{"python3", "natter.py"},
+		NatterTimeoutSeconds:      60,
+		NatterStopWireGuard:       true,
+		NatterWireGuardControl:    "ifup",
+		NatterRestartDelaySeconds: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	node, err := st.ApproveNode("node", NodeApproval{Role: "server", Interface: "wg1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !node.NatterManaged || !node.NatterConfigured || len(node.NatterCommand) != 2 || node.NatterCommand[1] != "natter.py" {
+		t.Fatalf("expected natter config preserved: %#v", node)
 	}
 }

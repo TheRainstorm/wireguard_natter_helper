@@ -398,7 +398,7 @@ func (a *Agent) applyRemoteNodeConfig(node store.Node) {
 		a.config.Monitor.Enabled = true
 		changed = true
 	}
-	if len(node.NatterCommand) > 0 {
+	if node.NatterConfigured {
 		if !sameStrings(a.config.Natter.Command, node.NatterCommand) {
 			a.config.Natter.Command = append([]string(nil), node.NatterCommand...)
 			changed = true
@@ -419,6 +419,9 @@ func (a *Agent) applyRemoteNodeConfig(node store.Node) {
 			a.config.Natter.RestartDelaySeconds = node.NatterRestartDelaySeconds
 			changed = true
 		}
+	} else if node.NatterManaged && len(a.config.Natter.Command) > 0 {
+		a.config.Natter = NatterConfig{}
+		changed = true
 	}
 	if changed {
 		log.Printf("agent applied remote config role=%s interface=%s config_type=%s reload_method=%s", node.Role, node.Interface, node.ConfigType, node.ReloadMethod)

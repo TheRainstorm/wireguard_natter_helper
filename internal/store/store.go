@@ -40,6 +40,8 @@ type Node struct {
 	Interface                 string   `json:"interface"`
 	ConfigType                string   `json:"config_type"`
 	ReloadMethod              string   `json:"reload_method"`
+	NatterManaged             bool     `json:"natter_managed,omitempty"`
+	NatterConfigured          bool     `json:"natter_configured,omitempty"`
 	NatterCommand             []string `json:"natter_command,omitempty"`
 	NatterTimeoutSeconds      int      `json:"natter_timeout_seconds,omitempty"`
 	NatterStopWireGuard       bool     `json:"natter_stop_wireguard,omitempty"`
@@ -357,6 +359,8 @@ type NodeApproval struct {
 	Interface                 string
 	ConfigType                string
 	ReloadMethod              string
+	NatterManaged             bool
+	NatterConfigured          bool
 	NatterCommand             []string
 	NatterTimeoutSeconds      int
 	NatterStopWireGuard       bool
@@ -399,26 +403,38 @@ func (s *Store) ApproveNode(nodeID string, approval NodeApproval) (Node, error) 
 	if approval.ReloadMethod != "" {
 		node.ReloadMethod = approval.ReloadMethod
 	}
-	if len(approval.NatterCommand) > 0 {
-		node.NatterCommand = append([]string(nil), approval.NatterCommand...)
-		node.NatterStopWireGuard = approval.NatterStopWireGuard
-	}
-	if approval.NatterTimeoutSeconds > 0 {
-		node.NatterTimeoutSeconds = approval.NatterTimeoutSeconds
-	}
-	if approval.NatterWireGuardControl != "" {
-		node.NatterWireGuardControl = approval.NatterWireGuardControl
-	}
-	if approval.NatterRestartDelaySeconds > 0 {
-		node.NatterRestartDelaySeconds = approval.NatterRestartDelaySeconds
+	if approval.NatterManaged {
+		node.NatterManaged = true
+		if approval.NatterConfigured {
+			node.NatterCommand = append([]string(nil), approval.NatterCommand...)
+			node.NatterConfigured = true
+			node.NatterStopWireGuard = approval.NatterStopWireGuard
+			node.NatterTimeoutSeconds = approval.NatterTimeoutSeconds
+			node.NatterWireGuardControl = approval.NatterWireGuardControl
+			node.NatterRestartDelaySeconds = approval.NatterRestartDelaySeconds
+		} else {
+			node.NatterConfigured = false
+			node.NatterCommand = nil
+			node.NatterTimeoutSeconds = 0
+			node.NatterStopWireGuard = false
+			node.NatterWireGuardControl = ""
+			node.NatterRestartDelaySeconds = 0
+		}
 	}
 	defaultNodeRuntimeFields(&node)
+	wasApproved := node.Approved
 	node.Approved = true
 	if node.Status == "pending" {
 		node.Status = "offline"
 	}
 	s.data.Nodes[nodeID] = node
-	s.addEventLocked("node.approved", "info", node.ID, "", "Node approved", map[string]any{"domain_id": node.DomainID, "role": node.Role, "interface": node.Interface})
+	eventType := "node.approved"
+	message := "Node approved"
+	if wasApproved {
+		eventType = "node.updated"
+		message = "Node configuration updated"
+	}
+	s.addEventLocked(eventType, "info", node.ID, "", message, map[string]any{"domain_id": node.DomainID, "role": node.Role, "interface": node.Interface})
 	return node, s.saveLocked()
 }
 

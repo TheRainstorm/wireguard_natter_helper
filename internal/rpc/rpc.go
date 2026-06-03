@@ -35,6 +35,8 @@ type Request struct {
 	Interface                 string   `json:"interface,omitempty"`
 	ConfigType                string   `json:"config_type,omitempty"`
 	ReloadMethod              string   `json:"reload_method,omitempty"`
+	NatterManaged             bool     `json:"natter_managed,omitempty"`
+	NatterConfigured          bool     `json:"natter_configured,omitempty"`
 	NatterCommand             []string `json:"natter_command,omitempty"`
 	NatterTimeoutSeconds      int      `json:"natter_timeout_seconds,omitempty"`
 	NatterStopWireGuard       bool     `json:"natter_stop_wireguard,omitempty"`
