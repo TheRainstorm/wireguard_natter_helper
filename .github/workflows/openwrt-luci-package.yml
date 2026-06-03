@@ -39,8 +39,6 @@ jobs:
             sdk_arch: x86_64
           - arch: arm64-filogic
             sdk_arch: aarch64_cortex-a53
-          - arch: arm64-generic
-            sdk_arch: aarch64_generic
 
     steps:
       - name: Checkout
