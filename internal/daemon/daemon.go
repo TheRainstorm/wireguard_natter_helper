@@ -79,6 +79,8 @@ func (s *Server) write(conn net.Conn, resp rpc.Response) {
 
 func (s *Server) handle(req rpc.Request, remote string) rpc.Response {
 	switch req.Kind {
+	case "agent.register":
+		return s.agentRegister(req, remote)
 	case "agent.join":
 		return s.agentJoin(req, remote)
 	case "agent.poll":
@@ -123,6 +125,24 @@ func (s *Server) handle(req rpc.Request, remote string) rpc.Response {
 	default:
 		return rpc.Response{OK: false, Error: "unknown request kind: " + req.Kind}
 	}
+}
+
+func (s *Server) agentRegister(req rpc.Request, remote string) rpc.Response {
+	if req.NodeID == "" || req.Token == "" {
+		return rpc.Response{OK: false, Error: "node_id and token are required"}
+	}
+	node, created, err := s.store.UpsertPendingNode(req.NodeID, req.Name, req.Token, req.Meta)
+	if err != nil {
+		log.Printf("agent register failed remote=%s node=%s error=%v", remote, req.NodeID, err)
+		return rpc.Response{OK: false, Error: err.Error()}
+	}
+	if created {
+		log.Printf("node registered pending approval node=%s remote=%s", node.ID, remote)
+	} else {
+		log.Printf("node register refreshed node=%s approved=%t remote=%s", node.ID, node.Approved, remote)
+	}
+	s.syncWireGuardInventory(req.NodeID, req.Meta)
+	return rpc.Response{OK: true, Approved: node.Approved, Nodes: []store.Node{sanitizeNode(node)}}
 }
 
 func (s *Server) agentJoin(req rpc.Request, remote string) rpc.Response {
@@ -172,7 +192,8 @@ func (s *Server) agentPoll(req rpc.Request, remote string) rpc.Response {
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	return rpc.Response{OK: true, Command: cmd, MonitorPeers: s.monitorPeersForNode(nodeID)}
+	node, _ := s.store.AuthenticateNodeAnyStatus(req.NodeID, req.Token)
+	return rpc.Response{OK: true, Command: cmd, MonitorPeers: s.monitorPeersForNode(nodeID), Nodes: []store.Node{sanitizeNode(node)}}
 }
 
 func (s *Server) adminCreateDomain(req rpc.Request) rpc.Response {

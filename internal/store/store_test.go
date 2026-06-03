@@ -131,3 +131,34 @@ func TestApproveNodeDefaultsRuntimeFieldsByNodeType(t *testing.T) {
 		t.Fatalf("unexpected openwrt defaults: %#v", node)
 	}
 }
+
+func TestPendingNodeCanRegisterWithoutDomainThenBeApproved(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateDomain("home", "Home", "join-home", ""); err != nil {
+		t.Fatal(err)
+	}
+	node, created, err := st.UpsertPendingNode("node-auto", "Auto Node", "auto-token", map[string]any{"platform": "linux/amd64"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created || node.DomainID != "" || node.Approved {
+		t.Fatalf("unexpected pending node: created=%t node=%#v", created, node)
+	}
+	if _, ok := st.AuthenticateNode("node-auto", "auto-token"); ok {
+		t.Fatal("pending node should not authenticate as approved")
+	}
+	node, err = st.ApproveNode("node-auto", NodeApproval{DomainID: "home", Role: "client", NodeType: "linux", Interface: "wg0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.DomainID != "home" || !node.Approved || node.ConfigType != "wg_conf" || node.ReloadMethod != "wg-quick-restart" {
+		t.Fatalf("unexpected approved node: %#v", node)
+	}
+	if _, ok := st.AuthenticateNode("node-auto", "auto-token"); !ok {
+		t.Fatal("approved node should authenticate")
+	}
+}

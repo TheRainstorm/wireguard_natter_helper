@@ -850,7 +850,7 @@ const pageHTML = `<!doctype html>
     function renderDomains(domains) {
       const body = document.getElementById('domainsBody');
       if (!domains.length) {
-        body.innerHTML = '<div class="empty">暂无 domain。先创建一个 domain，然后把 join code 填到节点 agent 配置里。</div>';
+        body.innerHTML = '<div class="empty">暂无 domain。先创建一个 domain，然后启动只配置 daemon_addr 的 agent，节点会出现在待审批列表里。</div>';
         return;
       }
       body.innerHTML = domains.map(domain => '<div class="domain">'
@@ -863,7 +863,7 @@ const pageHTML = `<!doctype html>
     function renderNodes(nodes, domains) {
       const body = document.getElementById('nodesBody');
       if (!nodes.length) {
-        body.innerHTML = '<tr><td colspan="8" class="empty">暂无节点。启动 agent 并填写 join_code 后，这里会出现待审批节点。</td></tr>';
+        body.innerHTML = '<tr><td colspan="8" class="empty">暂无节点。启动只配置 daemon_addr 的 agent 后，这里会出现待审批节点。</td></tr>';
         return;
       }
       body.innerHTML = nodes.map((node, idx) => {
@@ -972,7 +972,7 @@ const pageHTML = `<!doctype html>
         el.textContent = '';
         return;
       }
-      el.innerHTML = 'Domain <code>' + escapeHTML(domain.id) + '</code> 已创建。节点 agent 配置里填写 join_code: <code>' + escapeHTML(domain.join_code) + '</code>';
+      el.innerHTML = 'Domain <code>' + escapeHTML(domain.id) + '</code> 已创建。普通节点只需要配置 daemon_addr；需要预绑定到这个 domain 时可额外填写 join_code: <code>' + escapeHTML(domain.join_code) + '</code>';
       el.style.display = 'block';
     }
 

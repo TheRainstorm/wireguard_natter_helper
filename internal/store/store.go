@@ -304,6 +304,47 @@ func (s *Store) UpsertJoinedNode(domainID, nodeID, name, token string, meta map[
 	return node, true, s.saveLocked()
 }
 
+func (s *Store) UpsertPendingNode(nodeID, name, token string, meta map[string]any) (Node, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if nodeID == "" || token == "" {
+		return Node{}, false, errors.New("node id and token are required")
+	}
+	if existing, ok := s.data.Nodes[nodeID]; ok {
+		if !auth.VerifyToken(token, existing.TokenHash) {
+			return Node{}, false, errors.New("node id already exists with a different token")
+		}
+		existing.LastSeenAt = protocol.NowISO()
+		if existing.Name == "" && name != "" {
+			existing.Name = name
+		}
+		if meta != nil {
+			existing.Platform, _ = meta["platform"].(string)
+			existing.AgentVersion, _ = meta["agent_version"].(string)
+		}
+		s.data.Nodes[nodeID] = existing
+		return existing, false, s.saveLocked()
+	}
+	node := Node{
+		ID:         nodeID,
+		Name:       name,
+		TokenHash:  auth.HashToken(token),
+		Approved:   false,
+		Status:     "pending",
+		LastSeenAt: protocol.NowISO(),
+	}
+	if node.Name == "" {
+		node.Name = node.ID
+	}
+	if meta != nil {
+		node.Platform, _ = meta["platform"].(string)
+		node.AgentVersion, _ = meta["agent_version"].(string)
+	}
+	s.data.Nodes[node.ID] = node
+	s.addEventLocked("node.registered", "info", node.ID, "", "Node registered and is pending approval", nil)
+	return node, true, s.saveLocked()
+}
+
 type NodeApproval struct {
 	DomainID     string
 	Role         string

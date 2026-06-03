@@ -223,7 +223,7 @@ docker run -d --name wgnh-daemon \
   --admin-token 'change-this-to-a-long-random-string'
 ```
 
-真实使用前，按下面的简化流程使用：先在 VPS 启动 daemon，再用 Web UI 创建 domain，节点只需要填同一个 join code，最后在网页里审批节点。通常不需要手动创建 node token，也不需要手动 add-binding。
+真实使用前，按下面的简化流程使用：先在 VPS 启动 daemon，再用 Web UI 创建 domain；每个节点本地只需要配置 daemon 地址，启动后在网页里审批并填写角色、domain 和接口。通常不需要手动创建 node token，也不需要手动 add-binding。
 
 ## 1. 在 VPS 启动 daemon
 
@@ -260,7 +260,7 @@ docker run --rm -p 9090:9090 wgnh:local web --addr 0.0.0.0:9090
 - daemon TCP 地址：`your-vps.example.com:3333`
 - admin token：启动 `wgnh daemon serve --admin-token` 时设置的值
 
-点击连接后，在 `Domain` 区域创建一个 domain，例如 `home`。页面会显示 `join_code`，把这个值复制到后面每台节点的 agent 配置里。浏览器会把 daemon 地址和 admin token 保存到 localStorage。
+点击连接后，在 `Domain` 区域创建一个 domain，例如 `home`。新节点可以只配置 daemon 地址启动，然后在网页里选择 domain 并审批；`join_code` 仍然保留给你想预先限制节点加入某个 domain 的场景。浏览器会把 daemon 地址和 admin token 保存到 localStorage。
 
 ## 3. 配置 NAT 后的 server agent
 
@@ -269,9 +269,7 @@ docker run --rm -p 9090:9090 wgnh:local web --addr 0.0.0.0:9090
 ```json
 {
   "daemon_addr": "your-vps.example.com:3333",
-  "join_code": "replace-with-domain-join-code",
   "node_name": "home-a",
-  "state_path": "/etc/wgnh/node-state.json",
   "retry_seconds": 5,
   "wireguard": [
     {
@@ -304,7 +302,7 @@ docker run --rm -p 9090:9090 wgnh:local web --addr 0.0.0.0:9090
 ./wgnh agent --config /etc/wgnh/agent.json
 ```
 
-第一次启动时，agent 会在 `state_path` 里自动生成本机 `node_id` 和 token，然后用 `join_code` 向 VPS 申请加入。回到 Web UI 的节点表，允许这个节点加入，角色选 `server`，接口填 `wg0`，节点类型按实际选择 `openwrt` 或 `linux`。
+第一次启动时，agent 会在默认 `/etc/wgnh/node-state.json` 里自动生成本机 `node_id` 和 token，然后向 VPS 注册为待审批节点。回到 Web UI 的节点表，允许这个节点加入，选择 domain，角色选 `server`，接口填 `wg0`，节点类型按实际选择 `openwrt` 或 `linux`。
 
 `stop_wireguard: true` 很重要：Natter 需要绑定 WireGuard 使用的本地端口，所以 agent 会先停止接口，拿到映射后再启动接口。
 
@@ -316,30 +314,15 @@ docker run --rm -p 9090:9090 wgnh:local web --addr 0.0.0.0:9090
 
 ## 4. 配置 client agent
 
-`office-b` 上的 `/etc/wgnh/agent.json` 示例：
+`office-b` 上的 `/etc/wgnh/agent.json` 现在可以最小化成这样：
 
 ```json
 {
-  "daemon_addr": "your-vps.example.com:3333",
-  "join_code": "replace-with-domain-join-code",
-  "node_name": "office-b",
-  "state_path": "/etc/wgnh/node-state.json",
-  "retry_seconds": 5,
-  "dry_run": false,
-  "wireguard": [
-    {
-      "name": "wg0",
-      "config_type": "openwrt_uci"
-    }
-  ],
-  "monitor": {
-    "enabled": true,
-    "interval_seconds": 30,
-    "stale_seconds": 180,
-    "fail_threshold": 3
-  }
+  "daemon_addr": "your-vps.example.com:3333"
 }
 ```
+
+agent 会自动生成本机身份、自动发现 WireGuard 接口，并在网页审批后启用 client 监控。高级场景才需要手动写 `node_name`、`state_path`、`wireguard` 或 `monitor`。
 
 启动 agent：
 
@@ -347,7 +330,7 @@ docker run --rm -p 9090:9090 wgnh:local web --addr 0.0.0.0:9090
 ./wgnh agent --config /etc/wgnh/agent.json
 ```
 
-回到 Web UI，允许这个节点加入，角色选 `client`，接口填 `wg0`。第一次测试可以先设置 `"dry_run": true`，确认流程正常后再改成 `false`。
+回到 Web UI，允许这个节点加入，选择 domain，角色选 `client`，接口填 `wg0`。网页审批里的节点类型会决定默认配置方式：OpenWrt 默认 `openwrt_uci/ifup`，Linux 默认 `wg_conf/wg-quick-restart`。
 
 ## 5. 自动生成 binding
 
@@ -414,7 +397,7 @@ server 和 client 都审批后，daemon 会根据 agent 上报的 WireGuard inve
 
 ### `invalid node credentials`
 
-如果使用 join code 模式，先检查 agent 的 `state_path` 文件是否还在，里面保存了自动生成的 `node_id` 和 token。删除这个文件会让 agent 生成新身份，需要在 Web UI 里重新审批。也要确认 daemon 使用的是同一个 `--state` 文件。
+先检查 agent 的 `state_path` 文件是否还在，默认是 `/etc/wgnh/node-state.json`，里面保存了自动生成的 `node_id` 和 token。删除这个文件会让 agent 生成新身份，需要在 Web UI 里重新审批。也要确认 daemon 使用的是同一个 `--state` 文件。
 
 ### `connection reset by peer`
 

@@ -223,7 +223,7 @@ docker run -d --name wgnh-daemon \
   --admin-token 'change-this-to-a-long-random-string'
 ```
 
-Before real use, follow the simplified flow below: start the VPS daemon, create a domain in the Web UI, put the same join code on each node, then approve nodes in the browser. In the normal path you do not need to manually create node tokens or run `add-binding`.
+Before real use, follow the simplified flow below: start the VPS daemon, create a domain in the Web UI, then start each node with only the daemon address and approve it in the browser with role, domain, and interface settings. In the normal path you do not need to manually create node tokens or run `add-binding`.
 
 ## 1. Start the daemon on the VPS
 
@@ -260,7 +260,7 @@ Open `http://127.0.0.1:9090`, enter:
 - daemon TCP address: `your-vps.example.com:3333`
 - admin token: the value passed to `wgnh daemon serve --admin-token`
 
-After connecting, create a domain such as `home` in the `Domain` section. The page shows a generated `join_code`; copy that value into every agent config below. The browser stores the daemon address and admin token in local storage.
+After connecting, create a domain such as `home` in the `Domain` section. New nodes can start with only the daemon address and then be assigned to a domain in the browser. `join_code` is still available when you want to pre-limit a node to one domain. The browser stores the daemon address and admin token in local storage.
 
 ## 3. Configure the NAT-side server agent
 
@@ -269,9 +269,7 @@ Example `/etc/wgnh/agent.json` on `home-a`:
 ```json
 {
   "daemon_addr": "your-vps.example.com:3333",
-  "join_code": "replace-with-domain-join-code",
   "node_name": "home-a",
-  "state_path": "/etc/wgnh/node-state.json",
   "retry_seconds": 5,
   "wireguard": [
     {
@@ -304,7 +302,7 @@ Start the agent:
 ./wgnh agent --config /etc/wgnh/agent.json
 ```
 
-On first start, the agent generates a local `node_id` and token in `state_path`, then asks the VPS to join with `join_code`. Go back to the Web UI node table, approve the node, choose role `server`, set interface `wg0`, and select the real node type, `openwrt` or `linux`.
+On first start, the agent generates a local `node_id` and token in the default `/etc/wgnh/node-state.json`, then registers with the VPS as a pending node. Go back to the Web UI node table, approve the node, choose the domain, choose role `server`, set interface `wg0`, and select the real node type, `openwrt` or `linux`.
 
 `stop_wireguard: true` is important because Natter must bind the same local port as WireGuard. The agent stops the interface, obtains the mapping, then starts the interface again.
 
@@ -316,30 +314,15 @@ Supported `wireguard_control_method` values:
 
 ## 4. Configure client agents
 
-Example `/etc/wgnh/agent.json` on `office-b`:
+Example `/etc/wgnh/agent.json` on `office-b` can now be this small:
 
 ```json
 {
-  "daemon_addr": "your-vps.example.com:3333",
-  "join_code": "replace-with-domain-join-code",
-  "node_name": "office-b",
-  "state_path": "/etc/wgnh/node-state.json",
-  "retry_seconds": 5,
-  "dry_run": false,
-  "wireguard": [
-    {
-      "name": "wg0",
-      "config_type": "openwrt_uci"
-    }
-  ],
-  "monitor": {
-    "enabled": true,
-    "interval_seconds": 30,
-    "stale_seconds": 180,
-    "fail_threshold": 3
-  }
+  "daemon_addr": "your-vps.example.com:3333"
 }
 ```
+
+The agent generates its local identity, discovers WireGuard interfaces, and enables client monitoring after approval in the browser. Only advanced setups need local `node_name`, `state_path`, `wireguard`, or `monitor` fields.
 
 Start the agent:
 
@@ -347,7 +330,7 @@ Start the agent:
 ./wgnh agent --config /etc/wgnh/agent.json
 ```
 
-Go back to the Web UI, approve the node, choose role `client`, and set interface `wg0`. Use `"dry_run": true` for the first test if you want to verify the flow without modifying local config.
+Go back to the Web UI, approve the node, choose the domain, choose role `client`, and set interface `wg0`. The node type selected in the browser decides the default config behavior: OpenWrt uses `openwrt_uci/ifup`, and Linux uses `wg_conf/wg-quick-restart`.
 
 ## 5. Automatic binding creation
 
@@ -414,7 +397,7 @@ If automatic binding does not fit your topology, you can still create a binding 
 
 ### `invalid node credentials`
 
-With join-code enrollment, check that the agent `state_path` file still exists; it stores the generated `node_id` and token. If that file is deleted, the agent creates a new identity and must be approved again in the Web UI. Also confirm the daemon is using the expected `--state` file.
+Check that the agent `state_path` file still exists; the default is `/etc/wgnh/node-state.json`, and it stores the generated `node_id` and token. If that file is deleted, the agent creates a new identity and must be approved again in the Web UI. Also confirm the daemon is using the expected `--state` file.
 
 ### `connection reset by peer`
 

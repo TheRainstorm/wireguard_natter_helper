@@ -1,20 +1,3 @@
 {
-  "daemon_addr": "127.0.0.1:3333",
-  "join_code": "replace-with-domain-join-code",
-  "node_name": "office-b",
-  "state_path": "/etc/wgnh/node-state.json",
-  "retry_seconds": 5,
-  "dry_run": true,
-  "wireguard": [
-    {
-      "name": "wg0",
-      "config_type": "openwrt_uci"
-    }
-  ],
-  "monitor": {
-    "enabled": true,
-    "interval_seconds": 30,
-    "stale_seconds": 180,
-    "fail_threshold": 3
-  }
+  "daemon_addr": "127.0.0.1:3333"
 }

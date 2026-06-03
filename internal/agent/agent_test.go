@@ -1,6 +1,11 @@
 package agent
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+
+	"github.com/yfy/wireguard-natter-helper/internal/store"
+)
 
 func TestParseNatterOutputUsesLastJSONLine(t *testing.T) {
 	got, err := ParseNatterOutput([]byte(`
@@ -63,5 +68,32 @@ func TestParseWhitespaceList(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("unexpected item %d: got %q want %q", i, got[i], want[i])
 		}
+	}
+}
+
+func TestNewAutoCreatesLocalStateWithoutJoinCode(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "node-state.json")
+	a, err := New(Config{DaemonAddr: "127.0.0.1:3333", StatePath: statePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.config.NodeID == "" || a.token == "" {
+		t.Fatalf("expected generated identity, node_id=%q token=%q", a.config.NodeID, a.token)
+	}
+}
+
+func TestApplyRemoteNodeConfigEnablesClientMonitor(t *testing.T) {
+	a := &Agent{}
+	a.applyRemoteNodeConfig(store.Node{
+		Role:         "client",
+		Interface:    "wg0",
+		ConfigType:   "openwrt_uci",
+		ReloadMethod: "ifup",
+	})
+	if !a.config.Monitor.Enabled {
+		t.Fatal("client remote config should enable monitor")
+	}
+	if len(a.config.WireGuard) != 1 || a.config.WireGuard[0].Name != "wg0" || a.config.WireGuard[0].ConfigType != "openwrt_uci" {
+		t.Fatalf("unexpected wireguard config: %#v", a.config.WireGuard)
 	}
 }

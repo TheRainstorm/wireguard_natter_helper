@@ -19,6 +19,7 @@ import (
 
 	"github.com/yfy/wireguard-natter-helper/internal/protocol"
 	"github.com/yfy/wireguard-natter-helper/internal/rpc"
+	"github.com/yfy/wireguard-natter-helper/internal/store"
 	"github.com/yfy/wireguard-natter-helper/internal/wgconfig"
 )
 
@@ -76,6 +77,7 @@ type Agent struct {
 	token        string
 	addr         string
 	joined       bool
+	monitorOnce  sync.Once
 	monitorMu    sync.RWMutex
 	monitorPeers []MonitorPeer
 }
@@ -112,7 +114,7 @@ func New(cfg Config) (*Agent, error) {
 		}
 		token = string(bytes.TrimSpace(raw))
 	}
-	if (cfg.NodeID == "" || token == "") && cfg.JoinCode != "" {
+	if cfg.NodeID == "" || token == "" {
 		state, err := loadOrCreateLocalState(cfg.StatePath)
 		if err != nil {
 			return nil, err
@@ -133,23 +135,21 @@ func New(cfg Config) (*Agent, error) {
 		return nil, err
 	}
 	if cfg.NodeID == "" || addr == "" || token == "" {
-		return nil, errors.New("node_id, daemon_addr and token/token_file are required; or set join_code for bootstrap enrollment")
+		return nil, errors.New("daemon_addr is required; node_id and token are auto-created in state_path when omitted")
 	}
 	return &Agent{config: cfg, token: token, addr: addr, monitorPeers: cfg.Monitor.Peers}, nil
 }
 
 func (a *Agent) Run(ctx context.Context) error {
-	if a.config.Monitor.Enabled {
-		go a.runMonitor(ctx)
-	}
+	a.startMonitorIfNeeded(ctx)
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
 		}
-		if a.config.JoinCode != "" && !a.joined {
-			if joinErr := a.join(ctx); joinErr != nil {
+		if !a.joined {
+			if joinErr := a.enroll(ctx); joinErr != nil {
 				if strings.Contains(joinErr.Error(), "node pending approval") {
 					fmt.Fprintf(os.Stderr, "agent pending approval: node_id=%s\n", a.config.NodeID)
 				} else {
@@ -162,8 +162,8 @@ func (a *Agent) Run(ctx context.Context) error {
 		}
 		cmd, err := a.poll(ctx)
 		if err != nil {
-			if a.config.JoinCode != "" && strings.Contains(err.Error(), "node pending approval") {
-				if joinErr := a.join(ctx); joinErr != nil {
+			if strings.Contains(err.Error(), "node pending approval") {
+				if joinErr := a.enroll(ctx); joinErr != nil {
 					fmt.Fprintf(os.Stderr, "agent join error: %v\n", joinErr)
 				} else {
 					fmt.Fprintf(os.Stderr, "agent pending approval: node_id=%s\n", a.config.NodeID)
@@ -171,8 +171,8 @@ func (a *Agent) Run(ctx context.Context) error {
 				time.Sleep(time.Duration(a.config.RetrySeconds) * time.Second)
 				continue
 			}
-			if a.config.JoinCode != "" && !a.joined {
-				if joinErr := a.join(ctx); joinErr == nil {
+			if !a.joined {
+				if joinErr := a.enroll(ctx); joinErr == nil {
 					time.Sleep(time.Duration(a.config.RetrySeconds) * time.Second)
 					continue
 				}
@@ -185,6 +185,13 @@ func (a *Agent) Run(ctx context.Context) error {
 			a.handle(ctx, *cmd)
 		}
 	}
+}
+
+func (a *Agent) enroll(ctx context.Context) error {
+	if a.config.JoinCode != "" {
+		return a.join(ctx)
+	}
+	return a.register(ctx)
 }
 
 func loadOrCreateLocalState(path string) (LocalState, error) {
@@ -236,6 +243,24 @@ func (a *Agent) join(ctx context.Context) error {
 		Token:    a.token,
 		JoinCode: a.config.JoinCode,
 		Meta:     a.meta(),
+	}, 10*time.Second)
+	if err != nil {
+		return err
+	}
+	if !resp.Approved {
+		return errors.New("node pending approval")
+	}
+	a.joined = true
+	return nil
+}
+
+func (a *Agent) register(ctx context.Context) error {
+	resp, err := rpc.Call(ctx, a.addr, rpc.Request{
+		Kind:   "agent.register",
+		NodeID: a.config.NodeID,
+		Name:   a.config.NodeName,
+		Token:  a.token,
+		Meta:   a.meta(),
 	}, 10*time.Second)
 	if err != nil {
 		return err
@@ -335,10 +360,75 @@ func (a *Agent) poll(ctx context.Context) (*protocol.Command, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(resp.Nodes) > 0 {
+		a.applyRemoteNodeConfig(resp.Nodes[0])
+	}
 	if len(resp.MonitorPeers) > 0 {
 		a.setMonitorPeers(resp.MonitorPeers)
+		a.startMonitorIfNeeded(ctx)
 	}
 	return resp.Command, nil
+}
+
+func (a *Agent) applyRemoteNodeConfig(node store.Node) {
+	changed := false
+	if node.Role != "" && a.config.Role != node.Role {
+		a.config.Role = node.Role
+		changed = true
+	}
+	if node.Interface != "" {
+		item := a.ensureWireGuardInterface(node.Interface)
+		if node.ConfigType != "" && item.ConfigType != node.ConfigType {
+			item.ConfigType = node.ConfigType
+			changed = true
+		}
+		if node.ReloadMethod != "" && item.WGControlMethod == "" {
+			switch node.ReloadMethod {
+			case "ifup":
+				item.WGControlMethod = "ifup"
+				changed = true
+			case "wg-quick-restart":
+				item.WGControlMethod = "wg-quick"
+				changed = true
+			}
+		}
+		a.setWireGuardInterface(item)
+	}
+	if node.Role == "client" && !a.config.Monitor.Enabled {
+		a.config.Monitor.Enabled = true
+		changed = true
+	}
+	if changed {
+		log.Printf("agent applied remote config role=%s interface=%s config_type=%s reload_method=%s", node.Role, node.Interface, node.ConfigType, node.ReloadMethod)
+	}
+}
+
+func (a *Agent) ensureWireGuardInterface(name string) WGInterface {
+	for _, item := range a.config.WireGuard {
+		if item.Name == name {
+			return item
+		}
+	}
+	return WGInterface{Name: name}
+}
+
+func (a *Agent) setWireGuardInterface(next WGInterface) {
+	for i, item := range a.config.WireGuard {
+		if item.Name == next.Name {
+			a.config.WireGuard[i] = next
+			return
+		}
+	}
+	a.config.WireGuard = append(a.config.WireGuard, next)
+}
+
+func (a *Agent) startMonitorIfNeeded(ctx context.Context) {
+	if !a.config.Monitor.Enabled {
+		return
+	}
+	a.monitorOnce.Do(func() {
+		go a.runMonitor(ctx)
+	})
 }
 
 func (a *Agent) meta() map[string]any {
