@@ -272,6 +272,8 @@ docker run --rm -p 9090:9090 wgnh:local web --addr 0.0.0.0:9090
 
 第一次启动时，agent 会在默认 `/etc/wgnh/node-state.json` 里自动生成本机 `node_id` 和 token，然后向 VPS 注册为待审批节点，并尝试自动发现 WireGuard 接口。回到 Web UI 的节点表，允许这个节点加入，选择 domain，角色选 `server`，接口填 `wg0`，节点类型按实际选择 `openwrt` 或 `linux`。
 
+网页里保存的节点名称、角色、接口、Natter 命令等配置会写入 VPS daemon 的 `--state` 文件，例如 `/etc/wgnh/state.json` 或你启动 daemon 时指定的路径。agent 本机的 `/etc/wgnh/node-state.json` 只保存自动生成的 `node_id` 和 token，不保存这些网页配置。
+
 server 节点还需要在审批行里填写 Natter 命令，例如：
 
 ```text
@@ -289,6 +291,8 @@ python3 /opt/Natter/natter.py -u -i pppoe-wan -b 51820 --map-only
 ```
 
 agent 会自动生成本机身份、自动发现 WireGuard 接口，并在网页审批后启用 client 监控。回到 Web UI，允许这个节点加入，选择 domain，角色选 `client`，接口填 `wg0`。网页审批里的节点类型会决定默认配置方式：OpenWrt 默认 `openwrt_uci/ifup`，Linux 默认 `wg_conf/wg-quick-restart`。
+
+后续仍然可以在 Web UI 的节点表里修改已审批节点的名称、角色、接口和配置。修改后点击 `保存配置`，变更会写入 VPS daemon 的 state 文件，并在 agent 下一次 poll 时下发到节点内存中。
 
 ## 5. 自动生成 binding
 

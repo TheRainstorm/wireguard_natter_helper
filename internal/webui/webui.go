@@ -852,9 +852,10 @@ const pageHTML = `<!doctype html>
       }
       btn.disabled = true;
       try {
-        await postJSON('/api/approve-node', payload);
+        const data = await postJSON('/api/approve-node', payload);
+        const saved = data.nodes && data.nodes.length ? data.nodes[0] : {};
         nodeFormDirty = false;
-        toast((node.approved ? '节点配置已保存: ' : '节点已审批: ') + node.id);
+        toast((node.approved ? '节点配置已保存: ' : '节点已审批: ') + (saved.name || payload.name || node.id));
         await refresh(false);
       } catch (err) {
         toast('审批失败: ' + err.message);

@@ -272,6 +272,8 @@ Start the agent on `home-a` with only the daemon address:
 
 On first start, the agent generates a local `node_id` and token in the default `/etc/wgnh/node-state.json`, registers with the VPS as a pending node, and tries to discover WireGuard interfaces automatically. Go back to the Web UI node table, approve the node, choose the domain, choose role `server`, set interface `wg0`, and select the real node type, `openwrt` or `linux`.
 
+Node name, role, interface, Natter command, and other settings saved in the browser are stored in the VPS daemon `--state` file, such as `/etc/wgnh/state.json` or the path passed when starting the daemon. The agent-local `/etc/wgnh/node-state.json` only stores the generated `node_id` and token; it does not store Web UI node configuration.
+
 For server nodes, also fill the Natter command in the approval row, for example:
 
 ```text
@@ -289,6 +291,8 @@ Start the agent on `office-b` the same way:
 ```
 
 The agent generates its local identity, discovers WireGuard interfaces, and enables client monitoring after approval in the browser. Go back to the Web UI, approve the node, choose the domain, choose role `client`, and set interface `wg0`. The node type selected in the browser decides the default config behavior: OpenWrt uses `openwrt_uci/ifup`, and Linux uses `wg_conf/wg-quick-restart`.
+
+Approved nodes remain editable in the Web UI. Change the node name, role, interface, or config fields and click `Save config`; the daemon writes the change to its state file and sends it to the agent on the next poll.
 
 ## 5. Automatic binding creation
 
