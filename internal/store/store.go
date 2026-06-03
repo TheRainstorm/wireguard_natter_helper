@@ -22,6 +22,7 @@ type Store struct {
 type Data struct {
 	Nodes          map[string]Node            `json:"nodes"`
 	Domains        map[string]Domain          `json:"domains"`
+	DomainMembers  map[string]DomainMember    `json:"domain_members"`
 	Bindings       map[string]Binding         `json:"bindings"`
 	WGInterfaces   map[string]WGInterface     `json:"wireguard_interfaces"`
 	EndpointLeases []EndpointLease            `json:"endpoint_leases"`
@@ -61,8 +62,27 @@ type Domain struct {
 	Description string `json:"description,omitempty"`
 }
 
+type DomainMember struct {
+	DomainID                  string   `json:"domain_id"`
+	NodeID                    string   `json:"node_id"`
+	Role                      string   `json:"role"`
+	NodeType                  string   `json:"node_type"`
+	Interface                 string   `json:"interface"`
+	ConfigType                string   `json:"config_type"`
+	ReloadMethod              string   `json:"reload_method"`
+	NatterManaged             bool     `json:"natter_managed,omitempty"`
+	NatterConfigured          bool     `json:"natter_configured,omitempty"`
+	NatterCommand             []string `json:"natter_command,omitempty"`
+	NatterTimeoutSeconds      int      `json:"natter_timeout_seconds,omitempty"`
+	NatterStopWireGuard       bool     `json:"natter_stop_wireguard,omitempty"`
+	NatterWireGuardControl    string   `json:"natter_wireguard_control,omitempty"`
+	NatterRestartDelaySeconds int      `json:"natter_restart_delay_seconds,omitempty"`
+	UpdatedAt                 string   `json:"updated_at"`
+}
+
 type Binding struct {
 	ID              string `json:"id"`
+	DomainID        string `json:"domain_id,omitempty"`
 	ServerNodeID    string `json:"server_node_id"`
 	ServerInterface string `json:"server_interface"`
 	ClientNodeID    string `json:"client_node_id"`
@@ -138,12 +158,13 @@ func Open(path string) (*Store, error) {
 
 func newData() Data {
 	return Data{
-		Nodes:        map[string]Node{},
-		Domains:      map[string]Domain{},
-		Bindings:     map[string]Binding{},
-		WGInterfaces: map[string]WGInterface{},
-		Commands:     map[string][]QueuedCommand{},
-		Events:       []Event{},
+		Nodes:         map[string]Node{},
+		Domains:       map[string]Domain{},
+		DomainMembers: map[string]DomainMember{},
+		Bindings:      map[string]Binding{},
+		WGInterfaces:  map[string]WGInterface{},
+		Commands:      map[string][]QueuedCommand{},
+		Events:        []Event{},
 	}
 }
 
@@ -154,6 +175,9 @@ func (s *Store) ensureMaps() {
 	if s.data.Domains == nil {
 		s.data.Domains = map[string]Domain{}
 	}
+	if s.data.DomainMembers == nil {
+		s.data.DomainMembers = map[string]DomainMember{}
+	}
 	if s.data.Bindings == nil {
 		s.data.Bindings = map[string]Binding{}
 	}
@@ -162,6 +186,34 @@ func (s *Store) ensureMaps() {
 	}
 	if s.data.Commands == nil {
 		s.data.Commands = map[string][]QueuedCommand{}
+	}
+	for _, node := range s.data.Nodes {
+		if node.DomainID == "" || node.Interface == "" || node.Role == "" {
+			continue
+		}
+		key := domainMemberKey(node.DomainID, node.ID)
+		if _, exists := s.data.DomainMembers[key]; exists {
+			continue
+		}
+		member := DomainMember{
+			DomainID:                  node.DomainID,
+			NodeID:                    node.ID,
+			Role:                      node.Role,
+			NodeType:                  node.NodeType,
+			Interface:                 node.Interface,
+			ConfigType:                node.ConfigType,
+			ReloadMethod:              node.ReloadMethod,
+			NatterManaged:             node.NatterManaged,
+			NatterConfigured:          node.NatterConfigured,
+			NatterCommand:             append([]string(nil), node.NatterCommand...),
+			NatterTimeoutSeconds:      node.NatterTimeoutSeconds,
+			NatterStopWireGuard:       node.NatterStopWireGuard,
+			NatterWireGuardControl:    node.NatterWireGuardControl,
+			NatterRestartDelaySeconds: node.NatterRestartDelaySeconds,
+			UpdatedAt:                 node.LastSeenAt,
+		}
+		defaultMemberRuntimeFields(&member)
+		s.data.DomainMembers[key] = member
 	}
 }
 
@@ -376,52 +428,53 @@ func (s *Store) ApproveNode(nodeID string, approval NodeApproval) (Node, error) 
 	if !ok {
 		return Node{}, errors.New("node not found")
 	}
-	if approval.DomainID != "" {
-		if _, ok := s.data.Domains[approval.DomainID]; !ok {
-			return Node{}, errors.New("domain not found")
-		}
-		node.DomainID = approval.DomainID
-	}
-	if node.DomainID == "" {
+	domainID := firstNonEmpty(approval.DomainID, node.DomainID)
+	if domainID == "" {
 		return Node{}, errors.New("domain is required")
+	}
+	if _, ok := s.data.Domains[domainID]; !ok {
+		return Node{}, errors.New("domain not found")
 	}
 	if approval.Name != "" {
 		node.Name = approval.Name
 	}
-	if approval.Role != "" {
-		node.Role = approval.Role
-	}
-	if approval.NodeType != "" {
-		node.NodeType = approval.NodeType
-	}
-	if approval.Interface != "" {
-		node.Interface = approval.Interface
-	}
-	if approval.ConfigType != "" {
-		node.ConfigType = approval.ConfigType
-	}
-	if approval.ReloadMethod != "" {
-		node.ReloadMethod = approval.ReloadMethod
-	}
+	member := s.data.DomainMembers[domainMemberKey(domainID, nodeID)]
+	member.DomainID = domainID
+	member.NodeID = nodeID
+	member.Role = firstNonEmpty(approval.Role, member.Role, node.Role)
+	member.NodeType = firstNonEmpty(approval.NodeType, member.NodeType, node.NodeType)
+	member.Interface = firstNonEmpty(approval.Interface, member.Interface, node.Interface)
+	member.ConfigType = firstNonEmpty(approval.ConfigType, member.ConfigType, node.ConfigType)
+	member.ReloadMethod = firstNonEmpty(approval.ReloadMethod, member.ReloadMethod, node.ReloadMethod)
 	if approval.NatterManaged {
-		node.NatterManaged = true
+		member.NatterManaged = true
 		if approval.NatterConfigured {
-			node.NatterCommand = append([]string(nil), approval.NatterCommand...)
-			node.NatterConfigured = true
-			node.NatterStopWireGuard = approval.NatterStopWireGuard
-			node.NatterTimeoutSeconds = approval.NatterTimeoutSeconds
-			node.NatterWireGuardControl = approval.NatterWireGuardControl
-			node.NatterRestartDelaySeconds = approval.NatterRestartDelaySeconds
+			member.NatterCommand = append([]string(nil), approval.NatterCommand...)
+			member.NatterConfigured = true
+			member.NatterStopWireGuard = approval.NatterStopWireGuard
+			member.NatterTimeoutSeconds = approval.NatterTimeoutSeconds
+			member.NatterWireGuardControl = approval.NatterWireGuardControl
+			member.NatterRestartDelaySeconds = approval.NatterRestartDelaySeconds
 		} else {
-			node.NatterConfigured = false
-			node.NatterCommand = nil
-			node.NatterTimeoutSeconds = 0
-			node.NatterStopWireGuard = false
-			node.NatterWireGuardControl = ""
-			node.NatterRestartDelaySeconds = 0
+			member.NatterConfigured = false
+			member.NatterCommand = nil
+			member.NatterTimeoutSeconds = 0
+			member.NatterStopWireGuard = false
+			member.NatterWireGuardControl = ""
+			member.NatterRestartDelaySeconds = 0
 		}
 	}
-	defaultNodeRuntimeFields(&node)
+	if member.Role == "" {
+		return Node{}, errors.New("role is required")
+	}
+	if member.Interface == "" {
+		return Node{}, errors.New("interface is required")
+	}
+	defaultMemberRuntimeFields(&member)
+	member.UpdatedAt = protocol.NowISO()
+	s.data.DomainMembers[domainMemberKey(domainID, nodeID)] = member
+
+	applyMemberToLegacyNodeFields(&node, member)
 	wasApproved := node.Approved
 	node.Approved = true
 	if node.Status == "pending" {
@@ -434,7 +487,7 @@ func (s *Store) ApproveNode(nodeID string, approval NodeApproval) (Node, error) 
 		eventType = "node.updated"
 		message = "Node configuration updated"
 	}
-	s.addEventLocked(eventType, "info", node.ID, "", message, map[string]any{"domain_id": node.DomainID, "role": node.Role, "interface": node.Interface})
+	s.addEventLocked(eventType, "info", node.ID, "", message, map[string]any{"domain_id": member.DomainID, "role": member.Role, "interface": member.Interface})
 	return node, s.saveLocked()
 }
 
@@ -460,6 +513,11 @@ func (s *Store) DeleteNode(nodeID string) error {
 	}
 	delete(s.data.Nodes, nodeID)
 	delete(s.data.Commands, nodeID)
+	for key, member := range s.data.DomainMembers {
+		if member.NodeID == nodeID {
+			delete(s.data.DomainMembers, key)
+		}
+	}
 	for key, item := range s.data.WGInterfaces {
 		if item.NodeID == nodeID {
 			delete(s.data.WGInterfaces, key)
@@ -514,27 +572,51 @@ func (s *Store) WGInterfaces() []WGInterface {
 	return out
 }
 
+func (s *Store) DomainMembers() []DomainMember {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]DomainMember, 0, len(s.data.DomainMembers))
+	for _, member := range s.data.DomainMembers {
+		out = append(out, member)
+	}
+	return out
+}
+
+func (s *Store) DomainMembersForNode(nodeID string) []DomainMember {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []DomainMember
+	for _, member := range s.data.DomainMembers {
+		if member.NodeID == nodeID {
+			out = append(out, member)
+		}
+	}
+	return out
+}
+
 func (s *Store) ReconcileAutoBindings() ([]Binding, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var created []Binding
-	nodesByDomain := map[string][]Node{}
-	for _, node := range s.data.Nodes {
-		if node.Approved && node.DomainID != "" {
-			nodesByDomain[node.DomainID] = append(nodesByDomain[node.DomainID], node)
+	membersByDomain := map[string][]DomainMember{}
+	for _, member := range s.data.DomainMembers {
+		node, ok := s.data.Nodes[member.NodeID]
+		if !ok || !node.Approved || member.DomainID == "" {
+			continue
 		}
+		membersByDomain[member.DomainID] = append(membersByDomain[member.DomainID], member)
 	}
-	for domainID, nodes := range nodesByDomain {
-		for _, server := range nodes {
+	for domainID, members := range membersByDomain {
+		for _, server := range members {
 			if server.Role != "server" {
 				continue
 			}
-			serverIfaces := s.interfacesForNodeLocked(server.ID, server.Interface)
-			for _, client := range nodes {
-				if client.ID == server.ID || client.Role != "client" {
+			serverIfaces := s.interfacesForNodeLocked(server.NodeID, server.Interface)
+			for _, client := range members {
+				if client.NodeID == server.NodeID || client.Role != "client" {
 					continue
 				}
-				clientIfaces := s.interfacesForNodeLocked(client.ID, client.Interface)
+				clientIfaces := s.interfacesForNodeLocked(client.NodeID, client.Interface)
 				for _, serverIface := range serverIfaces {
 					if serverIface.PublicKey == "" {
 						continue
@@ -543,14 +625,15 @@ func (s *Store) ReconcileAutoBindings() ([]Binding, error) {
 						if !containsString(clientIface.Peers, serverIface.PublicKey) {
 							continue
 						}
-						if s.bindingExistsLocked(server.ID, serverIface.Name, client.ID, clientIface.Name, serverIface.PublicKey) {
+						if s.bindingExistsLocked(domainID, server.NodeID, serverIface.Name, client.NodeID, clientIface.Name, serverIface.PublicKey) {
 							continue
 						}
 						b := Binding{
-							ID:              autoBindingID(domainID, server.ID, serverIface.Name, client.ID, clientIface.Name),
-							ServerNodeID:    server.ID,
+							ID:              autoBindingID(domainID, server.NodeID, serverIface.Name, client.NodeID, clientIface.Name),
+							DomainID:        domainID,
+							ServerNodeID:    server.NodeID,
 							ServerInterface: serverIface.Name,
-							ClientNodeID:    client.ID,
+							ClientNodeID:    client.NodeID,
 							ClientInterface: clientIface.Name,
 							PeerPublicKey:   serverIface.PublicKey,
 							ConfigType:      firstNonEmpty(client.ConfigType, clientIface.ConfigType),
@@ -703,9 +786,10 @@ func (s *Store) interfacesForNodeLocked(nodeID, preferredName string) []WGInterf
 	return out
 }
 
-func (s *Store) bindingExistsLocked(serverNodeID, serverInterface, clientNodeID, clientInterface, peerPublicKey string) bool {
+func (s *Store) bindingExistsLocked(domainID, serverNodeID, serverInterface, clientNodeID, clientInterface, peerPublicKey string) bool {
 	for _, b := range s.data.Bindings {
-		if b.ServerNodeID == serverNodeID &&
+		if b.DomainID == domainID &&
+			b.ServerNodeID == serverNodeID &&
 			b.ServerInterface == serverInterface &&
 			b.ClientNodeID == clientNodeID &&
 			b.ClientInterface == clientInterface &&
@@ -722,6 +806,25 @@ func defaultBindingFields(b *Binding) {
 	}
 	if b.ReloadMethod == "" {
 		b.ReloadMethod = "none"
+	}
+}
+
+func defaultMemberRuntimeFields(member *DomainMember) {
+	switch member.NodeType {
+	case "openwrt":
+		if member.ConfigType == "" {
+			member.ConfigType = "openwrt_uci"
+		}
+		if member.ReloadMethod == "" {
+			member.ReloadMethod = "ifup"
+		}
+	case "linux":
+		if member.ConfigType == "" {
+			member.ConfigType = "wg_conf"
+		}
+		if member.ReloadMethod == "" {
+			member.ReloadMethod = "wg-quick-restart"
+		}
 	}
 }
 
@@ -744,8 +847,29 @@ func defaultNodeRuntimeFields(node *Node) {
 	}
 }
 
+func applyMemberToLegacyNodeFields(node *Node, member DomainMember) {
+	node.DomainID = member.DomainID
+	node.Role = member.Role
+	node.NodeType = member.NodeType
+	node.Interface = member.Interface
+	node.ConfigType = member.ConfigType
+	node.ReloadMethod = member.ReloadMethod
+	node.NatterManaged = member.NatterManaged
+	node.NatterConfigured = member.NatterConfigured
+	node.NatterCommand = append([]string(nil), member.NatterCommand...)
+	node.NatterTimeoutSeconds = member.NatterTimeoutSeconds
+	node.NatterStopWireGuard = member.NatterStopWireGuard
+	node.NatterWireGuardControl = member.NatterWireGuardControl
+	node.NatterRestartDelaySeconds = member.NatterRestartDelaySeconds
+	defaultNodeRuntimeFields(node)
+}
+
 func autoBindingID(domainID, serverNodeID, serverInterface, clientNodeID, clientInterface string) string {
 	return cleanID(domainID + "-" + serverNodeID + "-" + serverInterface + "-to-" + clientNodeID + "-" + clientInterface)
+}
+
+func domainMemberKey(domainID, nodeID string) string {
+	return domainID + "/" + nodeID
 }
 
 func wgInterfaceKey(nodeID, name string) string {

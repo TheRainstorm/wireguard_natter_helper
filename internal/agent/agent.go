@@ -24,20 +24,21 @@ import (
 )
 
 type Config struct {
-	NodeID       string        `json:"node_id"`
-	NodeName     string        `json:"node_name"`
-	DaemonAddr   string        `json:"daemon_addr"`
-	DaemonURL    string        `json:"daemon_url"`
-	Token        string        `json:"token"`
-	TokenFile    string        `json:"token_file"`
-	JoinCode     string        `json:"join_code"`
-	StatePath    string        `json:"state_path"`
-	Role         string        `json:"role"`
-	RetrySeconds int           `json:"retry_seconds"`
-	DryRun       bool          `json:"dry_run"`
-	WireGuard    []WGInterface `json:"wireguard"`
-	Natter       NatterConfig  `json:"natter"`
-	Monitor      MonitorConfig `json:"monitor"`
+	NodeID            string                  `json:"node_id"`
+	NodeName          string                  `json:"node_name"`
+	DaemonAddr        string                  `json:"daemon_addr"`
+	DaemonURL         string                  `json:"daemon_url"`
+	Token             string                  `json:"token"`
+	TokenFile         string                  `json:"token_file"`
+	JoinCode          string                  `json:"join_code"`
+	StatePath         string                  `json:"state_path"`
+	Role              string                  `json:"role"`
+	RetrySeconds      int                     `json:"retry_seconds"`
+	DryRun            bool                    `json:"dry_run"`
+	WireGuard         []WGInterface           `json:"wireguard"`
+	Natter            NatterConfig            `json:"natter"`
+	NatterByInterface map[string]NatterConfig `json:"natter_by_interface"`
+	Monitor           MonitorConfig           `json:"monitor"`
 }
 
 type WGInterface struct {
@@ -363,6 +364,9 @@ func (a *Agent) poll(ctx context.Context) (*protocol.Command, error) {
 	if len(resp.Nodes) > 0 {
 		a.applyRemoteNodeConfig(resp.Nodes[0])
 	}
+	if len(resp.DomainMembers) > 0 {
+		a.applyRemoteDomainMembers(resp.DomainMembers)
+	}
 	if len(resp.MonitorPeers) > 0 {
 		a.setMonitorPeers(resp.MonitorPeers)
 		a.startMonitorIfNeeded(ctx)
@@ -426,6 +430,67 @@ func (a *Agent) applyRemoteNodeConfig(node store.Node) {
 	if changed {
 		log.Printf("agent applied remote config role=%s interface=%s config_type=%s reload_method=%s", node.Role, node.Interface, node.ConfigType, node.ReloadMethod)
 	}
+}
+
+func (a *Agent) applyRemoteDomainMembers(members []store.DomainMember) {
+	changed := false
+	for _, member := range members {
+		if member.Interface == "" {
+			continue
+		}
+		if member.Role == "client" && !a.config.Monitor.Enabled {
+			a.config.Monitor.Enabled = true
+			changed = true
+		}
+		item := a.ensureWireGuardInterface(member.Interface)
+		if member.ConfigType != "" && item.ConfigType != member.ConfigType {
+			item.ConfigType = member.ConfigType
+			changed = true
+		}
+		if member.ReloadMethod != "" && item.WGControlMethod == "" {
+			switch member.ReloadMethod {
+			case "ifup":
+				item.WGControlMethod = "ifup"
+				changed = true
+			case "wg-quick-restart":
+				item.WGControlMethod = "wg-quick"
+				changed = true
+			}
+		}
+		a.setWireGuardInterface(item)
+		if member.NatterManaged {
+			if a.config.NatterByInterface == nil {
+				a.config.NatterByInterface = map[string]NatterConfig{}
+			}
+			if member.NatterConfigured {
+				next := NatterConfig{
+					Command:                append([]string(nil), member.NatterCommand...),
+					TimeoutSeconds:         member.NatterTimeoutSeconds,
+					StopWireGuard:          member.NatterStopWireGuard,
+					WireGuardControlMethod: member.NatterWireGuardControl,
+					RestartDelaySeconds:    member.NatterRestartDelaySeconds,
+				}
+				if !sameNatterConfig(a.config.NatterByInterface[member.Interface], next) {
+					a.config.NatterByInterface[member.Interface] = next
+					changed = true
+				}
+			} else if _, ok := a.config.NatterByInterface[member.Interface]; ok {
+				delete(a.config.NatterByInterface, member.Interface)
+				changed = true
+			}
+		}
+	}
+	if changed {
+		log.Printf("agent applied %d remote domain member config(s)", len(members))
+	}
+}
+
+func sameNatterConfig(a, b NatterConfig) bool {
+	return sameStrings(a.Command, b.Command) &&
+		a.TimeoutSeconds == b.TimeoutSeconds &&
+		a.StopWireGuard == b.StopWireGuard &&
+		a.WireGuardControlMethod == b.WireGuardControlMethod &&
+		a.RestartDelaySeconds == b.RestartDelaySeconds
 }
 
 func sameStrings(a, b []string) bool {
@@ -589,17 +654,18 @@ func (a *Agent) handle(ctx context.Context, cmd protocol.Command) {
 }
 
 func (a *Agent) runNatter(ctx context.Context, payload map[string]any) (map[string]any, error) {
-	if len(a.config.Natter.Command) == 0 {
-		return nil, errors.New("natter.command is not configured")
-	}
 	serverInterface := stringField(payload, "server_interface")
 	if serverInterface == "" {
 		return nil, errors.New("server_interface is required")
 	}
+	natter := a.natterConfigForInterface(serverInterface)
+	if len(natter.Command) == 0 {
+		return nil, errors.New("natter.command is not configured")
+	}
 
 	stoppedWireGuard := false
 	controlMethod := ""
-	if a.config.Natter.StopWireGuard {
+	if natter.StopWireGuard {
 		method, err := a.wireGuardControlMethod(serverInterface)
 		if err != nil {
 			return nil, err
@@ -613,14 +679,14 @@ func (a *Agent) runNatter(ctx context.Context, payload map[string]any) (map[stri
 		controlMethod = method
 	}
 
-	timeout := time.Duration(a.config.Natter.TimeoutSeconds) * time.Second
+	timeout := time.Duration(natter.TimeoutSeconds) * time.Second
 	if timeout == 0 {
 		timeout = 90 * time.Second
 	}
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	log.Printf("running natter command for interface=%s timeout=%s", serverInterface, timeout)
-	cmd := exec.CommandContext(runCtx, a.config.Natter.Command[0], a.config.Natter.Command[1:]...)
+	cmd := exec.CommandContext(runCtx, natter.Command[0], natter.Command[1:]...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		if startErr := a.restartWireGuardIfNeeded(serverInterface, controlMethod, stoppedWireGuard); startErr != nil {
@@ -643,11 +709,21 @@ func (a *Agent) runNatter(ctx context.Context, payload map[string]any) (map[stri
 	return result, nil
 }
 
+func (a *Agent) natterConfigForInterface(interfaceName string) NatterConfig {
+	if a.config.NatterByInterface != nil {
+		if natter, ok := a.config.NatterByInterface[interfaceName]; ok {
+			return natter
+		}
+	}
+	return a.config.Natter
+}
+
 func (a *Agent) restartWireGuardIfNeeded(interfaceName, method string, stopped bool) error {
 	if !stopped {
 		return nil
 	}
-	if delay := a.config.Natter.RestartDelaySeconds; delay > 0 {
+	natter := a.natterConfigForInterface(interfaceName)
+	if delay := natter.RestartDelaySeconds; delay > 0 {
 		log.Printf("waiting %d seconds before restarting WireGuard interface=%s", delay, interfaceName)
 		time.Sleep(time.Duration(delay) * time.Second)
 	}
@@ -660,8 +736,9 @@ func (a *Agent) restartWireGuardIfNeeded(interfaceName, method string, stopped b
 }
 
 func (a *Agent) wireGuardControlMethod(interfaceName string) (string, error) {
-	if a.config.Natter.WireGuardControlMethod != "" {
-		return a.config.Natter.WireGuardControlMethod, nil
+	natter := a.natterConfigForInterface(interfaceName)
+	if natter.WireGuardControlMethod != "" {
+		return natter.WireGuardControlMethod, nil
 	}
 	for _, item := range a.config.WireGuard {
 		if item.Name == interfaceName {

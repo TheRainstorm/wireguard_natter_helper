@@ -115,6 +115,72 @@ func TestReconcileAutoBindingsCreatesClientEndpointBinding(t *testing.T) {
 	}
 }
 
+func TestReconcileAutoBindingsUsesDomainMembershipInterface(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateDomain("wg0-domain", "WG0", "join-wg0", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateDomain("wg1-domain", "WG1", "join-wg1", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.UpsertPendingNode("op1", "op1", "op1-token", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.UpsertPendingNode("mi4a", "mi4a", "mi4a-token", nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range []NodeApproval{
+		{DomainID: "wg0-domain", Role: "server", Interface: "wg0", ConfigType: "openwrt_uci", ReloadMethod: "ifup"},
+		{DomainID: "wg1-domain", Role: "server", Interface: "wg1", ConfigType: "openwrt_uci", ReloadMethod: "ifup"},
+	} {
+		if _, err := st.ApproveNode("op1", item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, item := range []NodeApproval{
+		{DomainID: "wg0-domain", Role: "client", Interface: "wg0", ConfigType: "openwrt_uci", ReloadMethod: "ifup"},
+		{DomainID: "wg1-domain", Role: "client", Interface: "wg1", ConfigType: "openwrt_uci", ReloadMethod: "ifup"},
+	} {
+		if _, err := st.ApproveNode("mi4a", item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.UpdateWGInterfaces("op1", []WGInterface{
+		{Name: "wg0", PublicKey: "op1-shared-key"},
+		{Name: "wg1", PublicKey: "op1-shared-key"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpdateWGInterfaces("mi4a", []WGInterface{
+		{Name: "wg0", PublicKey: "mi4a-shared-key", Peers: []string{"op1-shared-key"}},
+		{Name: "wg1", PublicKey: "mi4a-shared-key", Peers: []string{"op1-shared-key"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := st.ReconcileAutoBindings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(created) != 2 {
+		t.Fatalf("expected two domain-specific bindings, got %#v", created)
+	}
+	got := map[string]Binding{}
+	for _, binding := range created {
+		got[binding.DomainID] = binding
+	}
+	if got["wg0-domain"].ServerInterface != "wg0" || got["wg0-domain"].ClientInterface != "wg0" {
+		t.Fatalf("unexpected wg0 binding: %#v", got["wg0-domain"])
+	}
+	if got["wg1-domain"].ServerInterface != "wg1" || got["wg1-domain"].ClientInterface != "wg1" {
+		t.Fatalf("unexpected wg1 binding: %#v", got["wg1-domain"])
+	}
+}
+
 func TestDeleteNodeRemovesRelatedState(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	st, err := Open(path)

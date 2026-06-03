@@ -97,6 +97,11 @@ func (s *Server) handle(req rpc.Request, remote string) rpc.Response {
 			return rpc.Response{OK: false, Error: err.Error()}
 		}
 		return rpc.Response{OK: true, Domains: s.store.Domains(false)}
+	case "admin.domain_members":
+		if err := s.authenticateAdmin(req); err != nil {
+			return rpc.Response{OK: false, Error: err.Error()}
+		}
+		return rpc.Response{OK: true, DomainMembers: s.store.DomainMembers()}
 	case "admin.create_domain":
 		return s.adminCreateDomain(req)
 	case "admin.approve_node":
@@ -195,7 +200,13 @@ func (s *Server) agentPoll(req rpc.Request, remote string) rpc.Response {
 		time.Sleep(500 * time.Millisecond)
 	}
 	node, _ := s.store.AuthenticateNodeAnyStatus(req.NodeID, req.Token)
-	return rpc.Response{OK: true, Command: cmd, MonitorPeers: s.monitorPeersForNode(nodeID), Nodes: []store.Node{sanitizeNode(node)}}
+	return rpc.Response{
+		OK:            true,
+		Command:       cmd,
+		MonitorPeers:  s.monitorPeersForNode(nodeID),
+		Nodes:         []store.Node{sanitizeNode(node)},
+		DomainMembers: s.store.DomainMembersForNode(nodeID),
+	}
 }
 
 func (s *Server) adminCreateDomain(req rpc.Request) rpc.Response {
@@ -250,7 +261,7 @@ func (s *Server) adminApproveNode(req rpc.Request) rpc.Response {
 	if err != nil {
 		return rpc.Response{OK: false, Error: err.Error()}
 	}
-	log.Printf("node saved node=%s approved=%t domain=%s role=%s type=%s interface=%s", node.ID, node.Approved, node.DomainID, node.Role, node.NodeType, node.Interface)
+	log.Printf("node saved node=%s approved=%t domain=%s role=%s type=%s interface=%s", node.ID, node.Approved, req.DomainID, req.Role, req.NodeType, req.Interface)
 	s.reconcileAutoBindings()
 	clean := sanitizeNode(node)
 	return rpc.Response{OK: true, Approved: true, Nodes: []store.Node{clean}}

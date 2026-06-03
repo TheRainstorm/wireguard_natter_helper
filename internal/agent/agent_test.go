@@ -140,3 +140,42 @@ func TestApplyRemoteNodeConfigPreservesLocalNatterWhenUnmanaged(t *testing.T) {
 		t.Fatalf("expected local natter preserved: %#v", a.config.Natter)
 	}
 }
+
+func TestApplyRemoteDomainMembersStoresPerInterfaceNatter(t *testing.T) {
+	a := &Agent{}
+	a.applyRemoteDomainMembers([]store.DomainMember{
+		{
+			DomainID:             "wg0-domain",
+			NodeID:               "op1",
+			Role:                 "server",
+			Interface:            "wg0",
+			ConfigType:           "openwrt_uci",
+			ReloadMethod:         "ifup",
+			NatterManaged:        true,
+			NatterConfigured:     true,
+			NatterCommand:        []string{"python3", "natter-wg0.py"},
+			NatterTimeoutSeconds: 30,
+		},
+		{
+			DomainID:             "wg1-domain",
+			NodeID:               "op1",
+			Role:                 "server",
+			Interface:            "wg1",
+			ConfigType:           "openwrt_uci",
+			ReloadMethod:         "ifup",
+			NatterManaged:        true,
+			NatterConfigured:     true,
+			NatterCommand:        []string{"python3", "natter-wg1.py"},
+			NatterTimeoutSeconds: 40,
+		},
+	})
+	if len(a.config.WireGuard) != 2 {
+		t.Fatalf("expected two wireguard interfaces: %#v", a.config.WireGuard)
+	}
+	if !sameStrings(a.natterConfigForInterface("wg0").Command, []string{"python3", "natter-wg0.py"}) {
+		t.Fatalf("unexpected wg0 natter config: %#v", a.config.NatterByInterface)
+	}
+	if !sameStrings(a.natterConfigForInterface("wg1").Command, []string{"python3", "natter-wg1.py"}) {
+		t.Fatalf("unexpected wg1 natter config: %#v", a.config.NatterByInterface)
+	}
+}

@@ -46,18 +46,19 @@ type Request struct {
 }
 
 type Response struct {
-	OK           bool                `json:"ok"`
-	Error        string              `json:"error,omitempty"`
-	Command      *protocol.Command   `json:"command,omitempty"`
-	MonitorPeers []MonitorPeer       `json:"monitor_peers,omitempty"`
-	Queued       int                 `json:"queued,omitempty"`
-	Approved     bool                `json:"approved,omitempty"`
-	Domain       *store.Domain       `json:"domain,omitempty"`
-	Domains      []store.Domain      `json:"domains,omitempty"`
-	Nodes        []store.Node        `json:"nodes,omitempty"`
-	Bindings     []store.Binding     `json:"bindings,omitempty"`
-	WGInterfaces []store.WGInterface `json:"wireguard_interfaces,omitempty"`
-	Events       []store.Event       `json:"events,omitempty"`
+	OK            bool                 `json:"ok"`
+	Error         string               `json:"error,omitempty"`
+	Command       *protocol.Command    `json:"command,omitempty"`
+	MonitorPeers  []MonitorPeer        `json:"monitor_peers,omitempty"`
+	Queued        int                  `json:"queued,omitempty"`
+	Approved      bool                 `json:"approved,omitempty"`
+	Domain        *store.Domain        `json:"domain,omitempty"`
+	Domains       []store.Domain       `json:"domains,omitempty"`
+	Nodes         []store.Node         `json:"nodes,omitempty"`
+	DomainMembers []store.DomainMember `json:"domain_members,omitempty"`
+	Bindings      []store.Binding      `json:"bindings,omitempty"`
+	WGInterfaces  []store.WGInterface  `json:"wireguard_interfaces,omitempty"`
+	Events        []store.Event        `json:"events,omitempty"`
 }
 
 type MonitorPeer struct {

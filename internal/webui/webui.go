@@ -22,14 +22,15 @@ type Server struct {
 }
 
 type dashboardData struct {
-	DaemonAddr   string              `json:"daemon_addr"`
-	GeneratedAt  string              `json:"generated_at"`
-	Domains      []store.Domain      `json:"domains"`
-	Nodes        []store.Node        `json:"nodes"`
-	WGInterfaces []store.WGInterface `json:"wireguard_interfaces"`
-	Bindings     []store.Binding     `json:"bindings"`
-	Events       []store.Event       `json:"events"`
-	Stats        stats               `json:"stats"`
+	DaemonAddr    string               `json:"daemon_addr"`
+	GeneratedAt   string               `json:"generated_at"`
+	Domains       []store.Domain       `json:"domains"`
+	Nodes         []store.Node         `json:"nodes"`
+	DomainMembers []store.DomainMember `json:"domain_members"`
+	WGInterfaces  []store.WGInterface  `json:"wireguard_interfaces"`
+	Bindings      []store.Binding      `json:"bindings"`
+	Events        []store.Event        `json:"events"`
+	Stats         stats                `json:"stats"`
 }
 
 type stats struct {
@@ -299,6 +300,10 @@ func load(ctx context.Context, daemonAddr, adminToken string) (dashboardData, er
 	if err != nil {
 		return dashboardData{}, fmt.Errorf("load nodes: %w", err)
 	}
+	membersResp, err := rpc.Call(ctx, daemonAddr, rpc.Request{Kind: "admin.domain_members", AdminToken: adminToken}, 10*time.Second)
+	if err != nil {
+		return dashboardData{}, fmt.Errorf("load domain members: %w", err)
+	}
 	bindingsResp, err := rpc.Call(ctx, daemonAddr, rpc.Request{Kind: "admin.bindings", AdminToken: adminToken}, 10*time.Second)
 	if err != nil {
 		return dashboardData{}, fmt.Errorf("load bindings: %w", err)
@@ -314,6 +319,7 @@ func load(ctx context.Context, daemonAddr, adminToken string) (dashboardData, er
 
 	domains := domainsResp.Domains
 	nodes := nodesResp.Nodes
+	members := membersResp.DomainMembers
 	bindings := bindingsResp.Bindings
 	wgInterfaces := wgResp.WGInterfaces
 	events := eventsResp.Events
@@ -322,6 +328,9 @@ func load(ctx context.Context, daemonAddr, adminToken string) (dashboardData, er
 	}
 	if nodes == nil {
 		nodes = []store.Node{}
+	}
+	if members == nil {
+		members = []store.DomainMember{}
 	}
 	if bindings == nil {
 		bindings = []store.Binding{}
@@ -334,6 +343,12 @@ func load(ctx context.Context, daemonAddr, adminToken string) (dashboardData, er
 	}
 	sort.Slice(domains, func(i, j int) bool { return domains[i].ID < domains[j].ID })
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].ID < nodes[j].ID })
+	sort.Slice(members, func(i, j int) bool {
+		if members[i].DomainID == members[j].DomainID {
+			return members[i].NodeID < members[j].NodeID
+		}
+		return members[i].DomainID < members[j].DomainID
+	})
 	sort.Slice(bindings, func(i, j int) bool { return bindings[i].ID < bindings[j].ID })
 	sort.Slice(wgInterfaces, func(i, j int) bool {
 		if wgInterfaces[i].NodeID == wgInterfaces[j].NodeID {
@@ -363,14 +378,15 @@ func load(ctx context.Context, daemonAddr, adminToken string) (dashboardData, er
 	}
 
 	return dashboardData{
-		DaemonAddr:   daemonAddr,
-		GeneratedAt:  time.Now().Format("2006-01-02 15:04:05"),
-		Domains:      domains,
-		Nodes:        nodes,
-		WGInterfaces: wgInterfaces,
-		Bindings:     bindings,
-		Events:       events,
-		Stats:        st,
+		DaemonAddr:    daemonAddr,
+		GeneratedAt:   time.Now().Format("2006-01-02 15:04:05"),
+		Domains:       domains,
+		Nodes:         nodes,
+		DomainMembers: members,
+		WGInterfaces:  wgInterfaces,
+		Bindings:      bindings,
+		Events:        events,
+		Stats:         st,
 	}, nil
 }
 
@@ -564,7 +580,9 @@ const pageHTML = `<!doctype html>
       border-radius: 8px;
       padding: 12px;
       background: #fff;
+      cursor: pointer;
     }
+    .domain.active { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
     .domain-title { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
     .domain-title strong { font-size: 14px; }
     .domain-desc { margin-top: 8px; color: var(--muted); white-space: normal; }
@@ -718,7 +736,8 @@ const pageHTML = `<!doctype html>
   <script>
     const storage = {
       daemonAddr: 'wgnh.web.daemonAddr',
-      adminToken: 'wgnh.web.adminToken'
+      adminToken: 'wgnh.web.adminToken',
+      selectedDomain: 'wgnh.web.selectedDomain'
     };
     const defaultDaemonAddr = '{{.DefaultDaemonAddr}}';
     const daemonAddrInput = document.getElementById('daemonAddr');
@@ -732,6 +751,7 @@ const pageHTML = `<!doctype html>
     let refreshTimer = null;
     let autoRefreshPaused = false;
     let nodeFormDirty = false;
+    let selectedDomainID = localStorage.getItem(storage.selectedDomain) || '';
 
     daemonAddrInput.value = localStorage.getItem(storage.daemonAddr) || daemonAddrInput.value || defaultDaemonAddr;
     adminTokenInput.value = localStorage.getItem(storage.adminToken) || '';
@@ -934,6 +954,12 @@ const pageHTML = `<!doctype html>
     }
 
     function render(data) {
+      const domains = data.domains || [];
+      if (!selectedDomainID && domains.length) selectedDomainID = domains[0].id;
+      if (selectedDomainID && domains.length && !domains.some(domain => domain.id === selectedDomainID)) {
+        selectedDomainID = domains[0].id;
+      }
+      localStorage.setItem(storage.selectedDomain, selectedDomainID || '');
       document.getElementById('subtitle').innerHTML = 'daemon <code>' + escapeHTML(data.daemon_addr) + '</code> · ' + escapeHTML(data.generated_at) + ' · ' + (autoRefreshPaused ? '自动刷新已暂停' : '自动刷新 15s');
       document.getElementById('statDomains').textContent = data.stats.domains;
       document.getElementById('statNodes').textContent = data.stats.nodes;
@@ -942,12 +968,15 @@ const pageHTML = `<!doctype html>
       document.getElementById('statInterfaces').textContent = data.stats.interfaces;
       document.getElementById('statBindings').textContent = data.stats.bindings;
       document.getElementById('statErrors').textContent = data.stats.errors;
-      renderDomains(data.domains || []);
+      renderDomains(domains);
       const nodeMap = buildNodeMap(data.nodes || []);
-      renderNodes(data.nodes || [], data.domains || []);
-      renderInterfaces(data.wireguard_interfaces || [], nodeMap);
-      renderBindings(data.bindings || [], nodeMap);
-      renderEvents(data.events || [], nodeMap);
+      const members = data.domain_members || [];
+      const memberMap = buildMemberMap(members);
+      const selectedMembers = members.filter(member => member.domain_id === selectedDomainID);
+      renderNodes(data.nodes || [], domains, memberMap, selectedMembers);
+      renderInterfaces(filterInterfaces(data.wireguard_interfaces || [], selectedMembers), nodeMap);
+      renderBindings(filterBindings(data.bindings || []), nodeMap);
+      renderEvents(filterEvents(data.events || [], selectedMembers), nodeMap);
     }
 
     function renderDomains(domains) {
@@ -956,29 +985,43 @@ const pageHTML = `<!doctype html>
         body.innerHTML = '<div class="empty">暂无 domain。先创建一个 domain，然后启动只配置 daemon_addr 的 agent，节点会出现在待审批列表里。</div>';
         return;
       }
-      body.innerHTML = domains.map(domain => '<div class="domain">'
+      body.innerHTML = domains.map((domain, idx) => '<div class="domain ' + (domain.id === selectedDomainID ? 'active' : '') + '" data-domain-index="' + idx + '">'
         + '<div class="domain-title"><div><strong>' + escapeHTML(domain.name || domain.id) + '</strong><div class="mini"><code>' + escapeHTML(domain.id) + '</code></div></div>'
         + '<span class="badge">' + escapeHTML(domain.created_at || 'created') + '</span></div>'
         + '<div class="domain-desc">' + escapeHTML(domain.description || '无说明') + '</div>'
         + '</div>').join('');
+      body.querySelectorAll('[data-domain-index]').forEach(el => {
+        el.addEventListener('click', () => {
+          selectedDomainID = domains[Number(el.dataset.domainIndex)].id;
+          localStorage.setItem(storage.selectedDomain, selectedDomainID);
+          nodeFormDirty = false;
+          refresh(false);
+        });
+      });
     }
 
-    function renderNodes(nodes, domains) {
+    function renderNodes(nodes, domains, memberMap, selectedMembers) {
       const body = document.getElementById('nodesBody');
       if (!nodes.length) {
         body.innerHTML = '<tr><td colspan="8" class="empty">暂无节点。启动只配置 daemon_addr 的 agent 后，这里会出现待审批节点。</td></tr>';
         return;
       }
-      body.innerHTML = nodes.map((node, idx) => {
+      const visibleNodes = nodes;
+      if (!visibleNodes.length) {
+        body.innerHTML = '<tr><td colspan="8" class="empty">当前 domain 暂无节点。可以从待审批节点中允许加入，或切换其他 domain。</td></tr>';
+        return;
+      }
+      body.innerHTML = visibleNodes.map((node, idx) => {
+        const member = memberMap[selectedDomainID + '/' + node.id] || {};
         return '<tr>'
           + '<td><div class="node-name"><strong>' + escapeHTML(nodeLabel(node)) + '</strong><span class="mini">' + escapeHTML(nodeSubLabel(node)) + '</span></div></td>'
-          + '<td><code>' + escapeHTML(node.domain_id || '-') + '</code></td>'
-          + '<td>' + escapeHTML(node.role || '-') + '</td>'
-          + '<td><span class="badge ' + escapeAttr(node.status) + '">' + escapeHTML(node.status || '-') + '</span> ' + (node.approved ? '<span class="badge online">approved</span>' : '<span class="badge warning">pending</span>') + '</td>'
-          + '<td>' + escapeHTML(node.node_type || node.platform || '-') + '<div class="mini">' + escapeHTML(node.agent_version || '') + '</div></td>'
-          + '<td><code>' + escapeHTML(node.interface || '-') + '</code><div class="mini">' + escapeHTML(node.config_type || '') + ' ' + escapeHTML(node.reload_method || '') + '</div></td>'
+          + '<td><code>' + escapeHTML(member.domain_id || selectedDomainID || '-') + '</code></td>'
+          + '<td>' + escapeHTML(member.role || '-') + '</td>'
+          + '<td><span class="badge ' + escapeAttr(node.status) + '">' + escapeHTML(node.status || '-') + '</span> ' + (member.node_id ? '<span class="badge online">in domain</span>' : '<span class="badge warning">not in domain</span>') + '</td>'
+          + '<td>' + escapeHTML(member.node_type || node.node_type || node.platform || '-') + '<div class="mini">' + escapeHTML(node.agent_version || '') + '</div></td>'
+          + '<td><code>' + escapeHTML(member.interface || '-') + '</code><div class="mini">' + escapeHTML(member.config_type || '') + ' ' + escapeHTML(member.reload_method || '') + '</div></td>'
           + '<td>' + escapeHTML(node.last_seen_at || '-') + '</td>'
-          + '<td>' + approvalControls(node, idx, domains) + '</td>'
+          + '<td>' + approvalControls(node, member, idx, domains) + '</td>'
           + '</tr>';
       }).join('');
       body.querySelectorAll('[data-node-form]').forEach(el => {
@@ -991,37 +1034,39 @@ const pageHTML = `<!doctype html>
       });
       body.querySelectorAll('button[data-approve]').forEach(btn => {
         const idx = Number(btn.dataset.approve);
-        btn.addEventListener('click', () => approveNode(nodes[idx], idx, btn));
+        btn.addEventListener('click', () => approveNode(visibleNodes[idx], idx, btn));
       });
       body.querySelectorAll('button[data-delete-node]').forEach(btn => {
         const idx = Number(btn.dataset.deleteNode);
-        btn.addEventListener('click', () => deleteNode(nodes[idx], btn));
+        btn.addEventListener('click', () => deleteNode(visibleNodes[idx], btn));
       });
     }
 
-    function approvalControls(node, idx, domains) {
+    function approvalControls(node, member, idx, domains) {
       const id = 'approve-' + idx + '-';
-      const domainOptions = domains.map(domain => '<option value="' + escapeValue(domain.id) + '"' + selected(domain.id, node.domain_id) + '>' + escapeHTML(domain.name || domain.id) + '</option>').join('');
-      const defaultNodeType = node.node_type || inferNodeType(node.platform);
-      const defaultConfigType = node.config_type || (defaultNodeType === 'openwrt' ? 'openwrt_uci' : 'wg_conf');
-      const defaultReload = node.reload_method || (defaultNodeType === 'openwrt' ? 'ifup' : 'wg-quick-restart');
-      const defaultNatterControl = node.natter_wireguard_control || (defaultNodeType === 'openwrt' ? 'ifup' : 'wg-quick');
+      const currentDomain = member.domain_id || selectedDomainID || node.domain_id;
+      const domainOptions = domains.map(domain => '<option value="' + escapeValue(domain.id) + '"' + selected(domain.id, currentDomain) + '>' + escapeHTML(domain.name || domain.id) + '</option>').join('');
+      const hasMember = !!member.node_id;
+      const defaultNodeType = member.node_type || node.node_type || inferNodeType(node.platform);
+      const defaultConfigType = member.config_type || node.config_type || (defaultNodeType === 'openwrt' ? 'openwrt_uci' : 'wg_conf');
+      const defaultReload = member.reload_method || node.reload_method || (defaultNodeType === 'openwrt' ? 'ifup' : 'wg-quick-restart');
+      const defaultNatterControl = member.natter_wireguard_control || node.natter_wireguard_control || (defaultNodeType === 'openwrt' ? 'ifup' : 'wg-quick');
       return '<div class="approval">'
         + '<input data-node-form id="' + id + 'name" placeholder="节点名称" value="' + escapeValue(node.name || '') + '">'
         + '<select data-node-form id="' + id + 'domain">' + domainOptions + '</select>'
-        + '<select data-node-form id="' + id + 'role" data-role="' + idx + '"><option value="client"' + selected('client', node.role || 'client') + '>client</option><option value="server"' + selected('server', node.role) + '>server</option></select>'
+        + '<select data-node-form id="' + id + 'role" data-role="' + idx + '"><option value="client"' + selected('client', member.role || 'client') + '>client</option><option value="server"' + selected('server', member.role) + '>server</option></select>'
         + '<select data-node-form id="' + id + 'nodeType"><option value="linux"' + selected('linux', defaultNodeType) + '>linux</option><option value="openwrt"' + selected('openwrt', defaultNodeType) + '>openwrt</option></select>'
-        + '<input data-node-form id="' + id + 'interface" placeholder="wg0" value="' + escapeValue(node.interface || 'wg0') + '">'
+        + '<input data-node-form id="' + id + 'interface" placeholder="wg0" value="' + escapeValue(member.interface || node.interface || 'wg0') + '">'
         + '<select data-node-form id="' + id + 'configType"><option value="wg_conf"' + selected('wg_conf', defaultConfigType) + '>wg_conf</option><option value="openwrt_uci"' + selected('openwrt_uci', defaultConfigType) + '>openwrt_uci</option><option value="runtime"' + selected('runtime', defaultConfigType) + '>runtime</option></select>'
         + '<select data-node-form id="' + id + 'reloadMethod"><option value="wg-quick-restart"' + selected('wg-quick-restart', defaultReload) + '>wg-quick-restart</option><option value="ifup"' + selected('ifup', defaultReload) + '>ifup</option><option value="none"' + selected('none', defaultReload) + '>none</option></select>'
         + '<div id="' + id + 'natterGroup" class="natter-fields">'
-        + '<input data-node-form id="' + id + 'natterCommand" placeholder="server 可填: python3 /opt/Natter/natter.py -u -i pppoe-wan -b 51820 --map-only" value="' + escapeValue((node.natter_command || []).join(' ')) + '">'
-        + '<input data-node-form id="' + id + 'natterTimeout" type="number" min="1" placeholder="Natter timeout" value="' + escapeValue(node.natter_timeout_seconds || 90) + '">'
-        + '<label class="check"><input data-node-form id="' + id + 'natterStop" type="checkbox" ' + (node.natter_stop_wireguard ? 'checked' : '') + '>停 WG</label>'
+        + '<input data-node-form id="' + id + 'natterCommand" placeholder="server 可填: python3 /opt/Natter/natter.py -u -i pppoe-wan -b 51820 --map-only" value="' + escapeValue(((hasMember ? member.natter_command : node.natter_command) || []).join(' ')) + '">'
+        + '<input data-node-form id="' + id + 'natterTimeout" type="number" min="1" placeholder="Natter timeout" value="' + escapeValue((hasMember ? member.natter_timeout_seconds : node.natter_timeout_seconds) || 90) + '">'
+        + '<label class="check"><input data-node-form id="' + id + 'natterStop" type="checkbox" ' + ((hasMember ? member.natter_stop_wireguard : node.natter_stop_wireguard) ? 'checked' : '') + '>停 WG</label>'
         + '<select data-node-form id="' + id + 'natterControl"><option value="ifup"' + selected('ifup', defaultNatterControl) + '>ifup</option><option value="wg-quick"' + selected('wg-quick', defaultNatterControl) + '>wg-quick</option><option value="systemd"' + selected('systemd', defaultNatterControl) + '>systemd</option></select>'
-        + '<input data-node-form id="' + id + 'natterRestartDelay" type="number" min="0" placeholder="restart delay" value="' + escapeValue(node.natter_restart_delay_seconds || 0) + '">'
+        + '<input data-node-form id="' + id + 'natterRestartDelay" type="number" min="0" placeholder="restart delay" value="' + escapeValue((hasMember ? member.natter_restart_delay_seconds : node.natter_restart_delay_seconds) || 0) + '">'
         + '</div>'
-        + '<button data-approve="' + idx + '">' + (node.approved ? '保存配置' : '允许加入') + '</button>'
+        + '<button data-approve="' + idx + '">' + (member.node_id ? '保存配置' : '允许加入') + '</button>'
         + '<button class="danger" data-delete-node="' + idx + '">删除</button>'
         + '</div>';
     }
@@ -1092,7 +1137,7 @@ const pageHTML = `<!doctype html>
         const serverNode = nodeMap[binding.server_node_id] || {id: binding.server_node_id};
         const clientNode = nodeMap[binding.client_node_id] || {id: binding.client_node_id};
         return '<tr>'
-          + '<td><code>' + escapeHTML(binding.id) + '</code></td>'
+          + '<td><code>' + escapeHTML(binding.id) + '</code><div class="mini">' + escapeHTML(binding.domain_id || '') + '</div></td>'
           + '<td>' + nodeRef(serverNode) + ' / <code>' + escapeHTML(binding.server_interface) + '</code></td>'
           + '<td>' + nodeRef(clientNode) + ' / <code>' + escapeHTML(binding.client_interface) + '</code></td>'
           + '<td>' + endpoint + '</td>'
@@ -1142,6 +1187,33 @@ const pageHTML = `<!doctype html>
       const out = {};
       for (const node of nodes) out[node.id] = node;
       return out;
+    }
+
+    function buildMemberMap(members) {
+      const out = {};
+      for (const member of members) out[member.domain_id + '/' + member.node_id] = member;
+      return out;
+    }
+
+    function filterInterfaces(interfaces, members) {
+      if (!selectedDomainID) return interfaces;
+      const allowed = new Set((members || []).map(member => member.node_id + '/' + member.interface));
+      return interfaces.filter(item => allowed.has(item.node_id + '/' + item.name));
+    }
+
+    function filterBindings(bindings) {
+      if (!selectedDomainID) return bindings;
+      return bindings.filter(binding => binding.domain_id === selectedDomainID || String(binding.id || '').startsWith(selectedDomainID + '-'));
+    }
+
+    function filterEvents(events, members) {
+      if (!selectedDomainID) return events;
+      const nodeIDs = new Set((members || []).map(member => member.node_id));
+      return events.filter(event => {
+        if (event.payload && event.payload.domain_id === selectedDomainID) return true;
+        if (event.binding_id && String(event.binding_id).startsWith(selectedDomainID + '-')) return true;
+        return event.node_id && nodeIDs.has(event.node_id);
+      });
     }
 
     function nodeLabel(node) {
