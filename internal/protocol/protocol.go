@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-const Version = "0.1.0"
+const Version = "0.1.3"
 
 type Command struct {
 	CommandID      string         `json:"command_id"`
