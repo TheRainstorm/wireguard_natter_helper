@@ -4,14 +4,19 @@ START=95
 STOP=10
 USE_PROCD=1
 
-WGNH_BIN="${WGNH_BIN:-/usr/bin/wgnh}"
-WGNH_DAEMON_ADDR="${WGNH_DAEMON_ADDR:-127.0.0.1:3333}"
-WGNH_STATE_PATH="${WGNH_STATE_PATH:-/etc/wgnh/node-state.json}"
-WGNH_RETRY_SECONDS="${WGNH_RETRY_SECONDS:-5}"
-
 start_service() {
+	config_load wgnh
+	local binary daemon_addr state_path retry_seconds dry_run
+	config_get binary agent binary /usr/bin/wgnh
+	config_get daemon_addr agent daemon_addr
+	config_get state_path agent state_path /etc/wgnh/node-state.json
+	config_get retry_seconds agent retry_seconds 5
+	config_get_bool dry_run agent dry_run 0
+	[ -n "$daemon_addr" ] || config_get daemon_addr daemon connect_addr 127.0.0.1:3333
+
 	procd_open_instance
-	procd_set_param command "$WGNH_BIN" agent --daemon-addr "$WGNH_DAEMON_ADDR" --state-path "$WGNH_STATE_PATH" --retry-seconds "$WGNH_RETRY_SECONDS"
+	procd_set_param command "$binary" agent --daemon-addr "$daemon_addr" --state-path "$state_path" --retry-seconds "$retry_seconds"
+	[ "$dry_run" = "1" ] && procd_append_param command --dry-run
 	procd_set_param respawn 3600 5 5
 	procd_set_param stdout 1
 	procd_set_param stderr 1
@@ -21,4 +26,8 @@ start_service() {
 reload_service() {
 	stop
 	start
+}
+
+service_triggers() {
+	procd_add_reload_trigger wgnh
 }

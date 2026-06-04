@@ -6,7 +6,7 @@ After=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=-/etc/wgnh/web.env
-ExecStart=/usr/local/bin/wgnh web --addr=${WGNH_WEB_ADDR} --daemon-addr=${WGNH_DAEMON_ADDR}
+ExecStart=/usr/local/bin/wgnh web --addr=${WGNH_WEB_ADDR} --daemon-addr=${WGNH_DAEMON_ADDR} --admin-token=${WGNH_ADMIN_TOKEN}
 Restart=always
 RestartSec=5s
 

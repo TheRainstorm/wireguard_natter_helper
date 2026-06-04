@@ -73,7 +73,7 @@ opkg install ./wgnh_*.ipk ./luci-app-wgnh_*.ipk
 /etc/init.d/uhttpd restart
 ```
 
-`wgnh` 包会把二进制安装到 `/usr/bin/wgnh`。`luci-app-wgnh` 包负责安装 LuCI 页面、UCI 配置和 OpenWrt 服务脚本。打开 LuCI，进入 `VPN` -> `WG Natter`，daemon 地址和 admin token 在 `WG Natter` -> `Settings` 里配置。
+`wgnh` 包会把二进制安装到 `/usr/bin/wgnh`，并安装 `/etc/config/wgnh`、`/etc/init.d/wgnh-agent`、`/etc/init.d/wgnh-daemon`。`luci-app-wgnh` 包只安装 LuCI 页面。打开 LuCI，进入 `VPN` -> `WG Natter`，daemon 地址和 admin token 在 `WG Natter` -> `Settings` 里配置。
 
 在 `Settings` 里，`Daemon address used by LuCI status` 填 VPS daemon 地址，例如 `ecs01.yfycloud.site:3333`。`Admin token used by LuCI status` 填启动 `wgnh daemon serve --admin-token` 时使用的 token；也可以留空，然后把 token 放到 `/etc/wgnh/admin-token`。`Status` 页面会显示远端 daemon 的节点、binding、事件，也会显示本机 OpenWrt 上 `wgnh-agent` / `wgnh-daemon` 的服务状态和最近 `logread` 日志。
 
@@ -81,7 +81,6 @@ opkg install ./wgnh_*.ipk ./luci-app-wgnh_*.ipk
 
 - `amd64`：OpenWrt `x86/64`
 - `arm64-filogic`：OpenWrt `mediatek/filogic`，包架构是 `aarch64_cortex-a53`，适合 Cudy TR3000 这类设备
-- `arm64-generic`：OpenWrt `armsr/armv8`，包架构是 `aarch64_generic`
 
 推送 `v0.1.0` 这类 tag 时，CI 会把编译好的 ipk 发布到 GitHub Releases。普通非 tag workflow run 会把 ipk 保存在 Actions artifacts。
 
@@ -94,15 +93,21 @@ install -m 0755 ./wgnh /usr/bin/wgnh
 mkdir -p /etc/wgnh
 ```
 
-安装 agent 服务，并把 VPS daemon 地址写到脚本顶部的 `WGNH_DAEMON_ADDR`：
+安装 UCI 配置和 agent 服务，然后把 VPS daemon 地址写到 `/etc/config/wgnh`：
 
 ```sh
+cp deploy/openwrt/wgnh.config /etc/config/wgnh
 cp deploy/openwrt/wgnh-agent.init /etc/init.d/wgnh-agent
-sed -i "s/127.0.0.1:3333/ecs01.yfycloud.site:3333/" /etc/init.d/wgnh-agent
 chmod +x /etc/init.d/wgnh-agent
+
+uci set wgnh.agent.daemon_addr='ecs01.yfycloud.site:3333'
+uci commit wgnh
+
 /etc/init.d/wgnh-agent enable
 /etc/init.d/wgnh-agent start
 ```
+
+agent 启动命令现在只需要 daemon 地址。`/etc/wgnh/node-state.json` 仍然会自动生成，但它只保存本机 `node_id` 和 token，不是旧版节点配置 JSON。
 
 查看日志：
 
@@ -115,11 +120,16 @@ logread -f | grep wgnh
 ```sh
 cp deploy/openwrt/wgnh-web.init /etc/init.d/wgnh-web
 chmod +x /etc/init.d/wgnh-web
+
+uci set wgnh.web.daemon_addr='ecs01.yfycloud.site:3333'
+uci set wgnh.web.admin_token='change-this-to-a-long-random-string'
+uci commit wgnh
+
 /etc/init.d/wgnh-web enable
 /etc/init.d/wgnh-web start
 ```
 
-如果这台 OpenWrt 需要跑 daemon，先创建 `/etc/wgnh/state.json`，把 admin token 放到 `/etc/wgnh/admin-token`，再启用 daemon 服务：
+如果这台 OpenWrt 需要跑 daemon，把 admin token 放到 `/etc/wgnh/admin-token`，配置 daemon 地址，再启用 daemon 服务。`/etc/wgnh/state.json` 会由 daemon 自动创建：
 
 ```sh
 printf '%s\n' 'change-this-to-a-long-random-string' > /etc/wgnh/admin-token
@@ -127,11 +137,17 @@ chmod 600 /etc/wgnh/admin-token
 
 cp deploy/openwrt/wgnh-daemon.init /etc/init.d/wgnh-daemon
 chmod +x /etc/init.d/wgnh-daemon
+
+uci set wgnh.daemon.listen_addr='0.0.0.0:3333'
+uci set wgnh.daemon.connect_addr='127.0.0.1:3333'
+uci set wgnh.daemon.admin_token_file='/etc/wgnh/admin-token'
+uci commit wgnh
+
 /etc/init.d/wgnh-daemon enable
 /etc/init.d/wgnh-daemon start
 ```
 
-如果你的二进制、配置文件、state 路径、监听地址或 cooldown 不同，直接修改 init 脚本顶部变量。
+如果你的二进制、state 路径、监听地址或 cooldown 不同，直接修改 `/etc/config/wgnh`，不要再改 init 脚本。
 
 ### 普通 Linux systemd
 
@@ -152,6 +168,8 @@ sed -i "s/your-vps.example.com:3333/ecs01.yfycloud.site:3333/" /etc/wgnh/agent.e
 systemctl daemon-reload
 systemctl enable --now wgnh-agent
 ```
+
+`deploy/systemd/wgnh-agent.env` 现在只需要 `WGNH_DAEMON_ADDR`，不再需要旧版 `agent.json`。agent 的本机身份状态默认保存在 `/etc/wgnh/node-state.json`，自动生成；节点名称、角色、接口等配置在 Web UI 里保存到 daemon state。
 
 安装并启用 daemon 服务：
 

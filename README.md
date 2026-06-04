@@ -73,7 +73,7 @@ opkg install ./wgnh_*.ipk ./luci-app-wgnh_*.ipk
 /etc/init.d/uhttpd restart
 ```
 
-The `wgnh` package installs the binary at `/usr/bin/wgnh`. The `luci-app-wgnh` package installs the LuCI page, UCI config, and OpenWrt services. Open LuCI and go to `VPN` -> `WG Natter`. Configure daemon address and admin token in `WG Natter` -> `Settings`.
+The `wgnh` package installs the binary at `/usr/bin/wgnh`, `/etc/config/wgnh`, `/etc/init.d/wgnh-agent`, and `/etc/init.d/wgnh-daemon`. The `luci-app-wgnh` package installs only the LuCI page. Open LuCI and go to `VPN` -> `WG Natter`. Configure daemon address and admin token in `WG Natter` -> `Settings`.
 
 In `Settings`, set `Daemon address used by LuCI status` to your VPS daemon address, for example `ecs01.yfycloud.site:3333`. Set `Admin token used by LuCI status` to the same value passed to `wgnh daemon serve --admin-token`, or leave it empty and put the token in `/etc/wgnh/admin-token`. The Status page shows remote daemon nodes, bindings, and events, plus local OpenWrt `wgnh-agent` / `wgnh-daemon` service status and recent `logread` lines.
 
@@ -81,7 +81,6 @@ The package sources live in `openwrt/wgnh` and `openwrt/luci-app-wgnh`. GitHub A
 
 - `amd64`: OpenWrt `x86/64`
 - `arm64-filogic`: OpenWrt `mediatek/filogic`, package arch `aarch64_cortex-a53`, for devices such as Cudy TR3000
-- `arm64-generic`: OpenWrt `armsr/armv8`, package arch `aarch64_generic`
 
 Tagged releases such as `v0.1.0` publish the built ipk files to GitHub Releases. Non-tag workflow runs keep the ipk files as Actions artifacts.
 
@@ -94,15 +93,21 @@ install -m 0755 ./wgnh /usr/bin/wgnh
 mkdir -p /etc/wgnh
 ```
 
-Install the agent service, then set `WGNH_DAEMON_ADDR` at the top of the script to your VPS daemon:
+Install the UCI config and agent service, then set the VPS daemon address in `/etc/config/wgnh`:
 
 ```sh
+cp deploy/openwrt/wgnh.config /etc/config/wgnh
 cp deploy/openwrt/wgnh-agent.init /etc/init.d/wgnh-agent
-sed -i "s/127.0.0.1:3333/ecs01.yfycloud.site:3333/" /etc/init.d/wgnh-agent
 chmod +x /etc/init.d/wgnh-agent
+
+uci set wgnh.agent.daemon_addr='ecs01.yfycloud.site:3333'
+uci commit wgnh
+
 /etc/init.d/wgnh-agent enable
 /etc/init.d/wgnh-agent start
 ```
+
+The agent startup command now only needs the daemon address. `/etc/wgnh/node-state.json` is still generated automatically, but it only stores the local `node_id` and token; it is not the old node configuration JSON.
 
 Check logs:
 
@@ -115,11 +120,16 @@ If this OpenWrt machine should run the Web UI:
 ```sh
 cp deploy/openwrt/wgnh-web.init /etc/init.d/wgnh-web
 chmod +x /etc/init.d/wgnh-web
+
+uci set wgnh.web.daemon_addr='ecs01.yfycloud.site:3333'
+uci set wgnh.web.admin_token='change-this-to-a-long-random-string'
+uci commit wgnh
+
 /etc/init.d/wgnh-web enable
 /etc/init.d/wgnh-web start
 ```
 
-If this OpenWrt machine should run the daemon, create `/etc/wgnh/state.json` first, put the admin token in `/etc/wgnh/admin-token`, then enable the daemon service:
+If this OpenWrt machine should run the daemon, put the admin token in `/etc/wgnh/admin-token`, configure the daemon address, then enable the daemon service. `/etc/wgnh/state.json` is created automatically by the daemon:
 
 ```sh
 printf '%s\n' 'change-this-to-a-long-random-string' > /etc/wgnh/admin-token
@@ -127,11 +137,17 @@ chmod 600 /etc/wgnh/admin-token
 
 cp deploy/openwrt/wgnh-daemon.init /etc/init.d/wgnh-daemon
 chmod +x /etc/init.d/wgnh-daemon
+
+uci set wgnh.daemon.listen_addr='0.0.0.0:3333'
+uci set wgnh.daemon.connect_addr='127.0.0.1:3333'
+uci set wgnh.daemon.admin_token_file='/etc/wgnh/admin-token'
+uci commit wgnh
+
 /etc/init.d/wgnh-daemon enable
 /etc/init.d/wgnh-daemon start
 ```
 
-Edit the variables at the top of the init script if your binary, config, state path, listen address, or cooldown differs.
+Edit `/etc/config/wgnh` if your binary, state path, listen address, or cooldown differs. Do not edit the init script variables.
 
 ### Linux systemd
 
@@ -152,6 +168,8 @@ sed -i "s/your-vps.example.com:3333/ecs01.yfycloud.site:3333/" /etc/wgnh/agent.e
 systemctl daemon-reload
 systemctl enable --now wgnh-agent
 ```
+
+`deploy/systemd/wgnh-agent.env` now only needs `WGNH_DAEMON_ADDR`; the old `agent.json` is no longer required. The agent identity state defaults to `/etc/wgnh/node-state.json` and is generated automatically; node name, role, interface, and other node configuration live in the daemon state through the Web UI.
 
 Install and enable the daemon service:
 
