@@ -379,7 +379,7 @@ func load(ctx context.Context, daemonAddr, adminToken string) (dashboardData, er
 
 	return dashboardData{
 		DaemonAddr:    daemonAddr,
-		GeneratedAt:   time.Now().Format("2006-01-02 15:04:05"),
+		GeneratedAt:   time.Now().Format(time.RFC3339),
 		Domains:       domains,
 		Nodes:         nodes,
 		DomainMembers: members,
@@ -726,7 +726,7 @@ const pageHTML = `<!doctype html>
       <div class="section-head"><h2>最近事件</h2></div>
       <div class="scroll">
         <table>
-          <thead><tr><th>时间</th><th>级别</th><th>类型</th><th>节点</th><th>绑定</th><th>消息</th><th>Payload</th></tr></thead>
+          <thead><tr><th>时间</th><th>Actor</th><th>Target</th><th>Action</th><th>Before / After</th><th>Result</th><th>Error</th></tr></thead>
           <tbody id="eventsBody"><tr><td colspan="7" class="empty">尚未连接 daemon</td></tr></tbody>
         </table>
       </div>
@@ -962,7 +962,7 @@ const pageHTML = `<!doctype html>
         selectedDomainID = domains[0].id;
       }
       localStorage.setItem(storage.selectedDomain, selectedDomainID || '');
-      document.getElementById('subtitle').innerHTML = 'daemon <code>' + escapeHTML(data.daemon_addr) + '</code> · ' + escapeHTML(data.generated_at) + ' · ' + (autoRefreshPaused ? '自动刷新已暂停' : '自动刷新 15s');
+      document.getElementById('subtitle').innerHTML = 'daemon <code>' + escapeHTML(data.daemon_addr) + '</code> · ' + escapeHTML(formatTime(data.generated_at)) + ' · ' + (autoRefreshPaused ? '自动刷新已暂停' : '自动刷新 15s');
       document.getElementById('statDomains').textContent = data.stats.domains;
       document.getElementById('statNodes').textContent = data.stats.nodes;
       document.getElementById('statOnline').textContent = data.stats.online;
@@ -989,7 +989,7 @@ const pageHTML = `<!doctype html>
       }
       body.innerHTML = domains.map((domain, idx) => '<div class="domain ' + (domain.id === selectedDomainID ? 'active' : '') + '" data-domain-index="' + idx + '">'
         + '<div class="domain-title"><div><strong>' + escapeHTML(domain.name || domain.id) + '</strong><div class="mini"><code>' + escapeHTML(domain.id) + '</code></div></div>'
-        + '<span class="badge">' + escapeHTML(domain.created_at || 'created') + '</span></div>'
+        + '<span class="badge">' + escapeHTML(formatTime(domain.created_at) || 'created') + '</span></div>'
         + '<div class="domain-desc">' + escapeHTML(domain.description || '无说明') + '</div>'
         + '</div>').join('');
       body.querySelectorAll('[data-domain-index]').forEach(el => {
@@ -1022,7 +1022,7 @@ const pageHTML = `<!doctype html>
           + '<td><span class="badge ' + escapeAttr(node.status) + '">' + escapeHTML(node.status || '-') + '</span> ' + (member.node_id ? '<span class="badge online">in domain</span>' : '<span class="badge warning">not in domain</span>') + '</td>'
           + '<td>' + escapeHTML(member.node_type || node.node_type || node.platform || '-') + '<div class="mini">' + escapeHTML(node.agent_version || '') + '</div></td>'
           + '<td><code>' + escapeHTML(member.interface || '-') + '</code><div class="mini">' + escapeHTML(member.config_type || '') + ' ' + escapeHTML(member.reload_method || '') + '</div></td>'
-          + '<td>' + escapeHTML(node.last_seen_at || '-') + '</td>'
+          + '<td>' + escapeHTML(formatTime(node.last_seen_at)) + '</td>'
           + '<td>' + approvalControls(node, member, idx, domains) + '</td>'
           + '</tr>';
       }).join('');
@@ -1117,7 +1117,7 @@ const pageHTML = `<!doctype html>
           + '<td>' + (item.listen_port ? escapeHTML(item.listen_port) : '<span class="muted">-</span>') + '</td>'
           + '<td class="wrap">' + (peers || '<span class="muted">无 peer</span>') + '</td>'
           + '<td><span class="badge">' + escapeHTML(item.config_type || 'runtime') + '</span> <span class="muted">' + escapeHTML(item.config_path || '') + '</span></td>'
-          + '<td>' + escapeHTML(item.updated_at || '-') + '</td>'
+          + '<td>' + escapeHTML(formatTime(item.updated_at)) + '</td>'
           + '</tr>';
       }).join('');
     }
@@ -1156,13 +1156,13 @@ const pageHTML = `<!doctype html>
         return;
       }
       body.innerHTML = events.map(event => '<tr>'
-        + '<td>' + escapeHTML(event.created_at) + '</td>'
-        + '<td><span class="' + escapeAttr(event.severity) + '">' + escapeHTML(event.severity) + '</span></td>'
-        + '<td><code>' + escapeHTML(event.type) + '</code></td>'
-        + '<td>' + (event.node_id ? nodeRef(nodeMap[event.node_id] || {id: event.node_id}) : '') + '</td>'
-        + '<td>' + escapeHTML(event.binding_id) + '</td>'
-        + '<td class="wrap">' + escapeHTML(event.message) + '</td>'
-        + '<td class="wrap"><code>' + escapeHTML(JSON.stringify(event.payload || {})) + '</code></td>'
+        + '<td>' + escapeHTML(formatTime(event.created_at)) + '</td>'
+        + '<td class="wrap">' + renderActor(event, nodeMap) + '</td>'
+        + '<td class="wrap">' + escapeHTML(formatTarget(event, nodeMap)) + '</td>'
+        + '<td><code>' + escapeHTML(event.action || event.type || '-') + '</code></td>'
+        + '<td class="wrap">' + renderChange(event) + '</td>'
+        + '<td><span class="' + escapeAttr(event.severity || event.result) + '">' + escapeHTML(event.result || event.severity || '-') + '</span></td>'
+        + '<td class="wrap">' + escapeHTML(event.error || '') + '</td>'
         + '</tr>').join('');
     }
 
@@ -1205,13 +1205,23 @@ const pageHTML = `<!doctype html>
     }
 
     function filterEvents(events, members) {
+      events = events.filter(isVisibleAuditEvent);
       if (!selectedDomainID) return events;
       const nodeIDs = new Set((members || []).map(member => member.node_id));
       return events.filter(event => {
         if (event.payload && event.payload.domain_id === selectedDomainID) return true;
+        if (event.after && event.after.domain_id === selectedDomainID) return true;
+        if (event.before && event.before.domain_id === selectedDomainID) return true;
         if (event.binding_id && String(event.binding_id).startsWith(selectedDomainID + '-')) return true;
         return event.node_id && nodeIDs.has(event.node_id);
       });
+    }
+
+    function isVisibleAuditEvent(event) {
+      const action = event.action || event.type || '';
+      if (action === 'agent.report') return false;
+      if ((action === 'command.queue' || action === 'command.complete') && event.severity !== 'error') return false;
+      return true;
     }
 
     function nodeLabel(node) {
@@ -1227,6 +1237,74 @@ const pageHTML = `<!doctype html>
 
     function nodeRef(node) {
       return '<span class="node-ref"><strong>' + escapeHTML(nodeLabel(node)) + '</strong><span class="mini">' + escapeHTML(nodeSubLabel(node)) + '</span></span>';
+    }
+
+    function renderActor(event, nodeMap) {
+      const actor = String(event.actor || '');
+      if (actor.startsWith('agent:')) {
+        const id = actor.slice('agent:'.length);
+        return 'agent ' + nodeRef(nodeMap[id] || {id});
+      }
+      return escapeHTML(actor || '-');
+    }
+
+    function formatTarget(event, nodeMap) {
+      const target = String(event.target || '');
+      if (target.startsWith('node:')) {
+        const id = target.slice('node:'.length);
+        const node = nodeMap[id] || {id};
+        return 'node ' + nodeLabel(node) + ' / ' + id;
+      }
+      if (target.startsWith('interface:')) {
+        const value = target.slice('interface:'.length);
+        const parts = value.split('/');
+        const node = nodeMap[parts[0]] || {id: parts[0]};
+        return 'interface ' + nodeLabel(node) + '/' + (parts[1] || '-');
+      }
+      return target || event.binding_id || event.node_id || '-';
+    }
+
+    function renderChange(event) {
+      const before = compactObject(event.before);
+      const after = compactObject(event.after);
+      if (before && after) {
+        return '<div class="mini">before</div><code>' + escapeHTML(before) + '</code><div class="mini">after</div><code>' + escapeHTML(after) + '</code>';
+      }
+      if (after) return '<code>' + escapeHTML(after) + '</code>';
+      if (before) return '<code>' + escapeHTML(before) + '</code>';
+      return escapeHTML(event.message || '');
+    }
+
+    function compactObject(value) {
+      if (!value || typeof value !== 'object') return '';
+      const keys = [
+        'domain_id', 'node_id', 'role', 'node_type', 'interface',
+        'server_node_id', 'server_interface', 'client_node_id', 'client_interface',
+        'public_ip', 'public_port', 'endpoint_host', 'endpoint_port',
+        'matched_bindings', 'binding_id', 'status', 'command_id', 'action',
+        'last_handshake', 'auto', 'enabled'
+      ];
+      const parts = [];
+      for (const key of keys) {
+        if (Object.prototype.hasOwnProperty.call(value, key) && value[key] !== '' && value[key] !== null && value[key] !== undefined) {
+          parts.push(key + '=' + compactValue(value[key]));
+        }
+      }
+      if (parts.length) return parts.join(' ');
+      return JSON.stringify(value);
+    }
+
+    function compactValue(value) {
+      if (Array.isArray(value)) return '[' + value.map(compactValue).join(',') + ']';
+      if (value && typeof value === 'object') return JSON.stringify(value);
+      return String(value);
+    }
+
+    function formatTime(value) {
+      if (!value) return '-';
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return value;
+      return date.toLocaleString();
     }
 
     function selected(value, current) {

@@ -183,6 +183,119 @@ func TestReconcileAutoBindingsUsesDomainMembershipInterface(t *testing.T) {
 	}
 }
 
+func TestReconcileAutoBindingsDeletesStaleAutoBinding(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateDomain("home", "Home", "join-home", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.UpsertPendingNode("op1", "op1", "op1-token", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.UpsertPendingNode("mi4a", "mi4a", "mi4a-token", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ApproveNode("op1", NodeApproval{DomainID: "home", Role: "server", NodeType: "openwrt", Interface: "wg0"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ApproveNode("mi4a", NodeApproval{DomainID: "home", Role: "client", NodeType: "openwrt", Interface: "wg0"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpdateWGInterfaces("op1", []WGInterface{
+		{Name: "wg0", PublicKey: "op1-key"},
+		{Name: "wg1", PublicKey: "op1-key"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpdateWGInterfaces("mi4a", []WGInterface{
+		{Name: "wg0", PublicKey: "mi4a-key", Peers: []string{"op1-key"}},
+		{Name: "wg1", PublicKey: "mi4a-key", Peers: []string{"op1-key"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := st.ReconcileAutoBindings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(created) != 1 || created[0].ServerInterface != "wg0" || !created[0].Auto {
+		t.Fatalf("expected initial wg0 auto binding, got %#v", created)
+	}
+
+	if _, err := st.ApproveNode("op1", NodeApproval{DomainID: "home", Role: "server", NodeType: "openwrt", Interface: "wg1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ApproveNode("mi4a", NodeApproval{DomainID: "home", Role: "client", NodeType: "openwrt", Interface: "wg1"}); err != nil {
+		t.Fatal(err)
+	}
+	created, err = st.ReconcileAutoBindings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(created) != 1 || created[0].ServerInterface != "wg1" || created[0].ClientInterface != "wg1" {
+		t.Fatalf("expected replacement wg1 binding, got %#v", created)
+	}
+	bindings := st.Bindings()
+	if len(bindings) != 1 || bindings[0].ServerInterface != "wg1" || bindings[0].ClientInterface != "wg1" {
+		t.Fatalf("expected stale wg0 binding removed: %#v", bindings)
+	}
+	var sawDelete bool
+	for _, event := range st.Events(20) {
+		if event.Action == "binding.auto_delete" {
+			sawDelete = true
+			if event.Actor != "daemon" || event.Target == "" || event.Before["server_interface"] != "wg0" || event.Result != "success" {
+				t.Fatalf("unexpected auto delete audit event: %#v", event)
+			}
+		}
+	}
+	if !sawDelete {
+		t.Fatalf("expected binding.auto_delete event, got %#v", st.Events(20))
+	}
+}
+
+func TestAuditEventsIncludeStructuredChangeFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateDomain("home", "Home", "join-home", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.UpsertPendingNode("router", "Router", "router-token", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ApproveNode("router", NodeApproval{DomainID: "home", Role: "client", NodeType: "linux", Interface: "wg0"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ApproveNode("router", NodeApproval{DomainID: "home", Role: "server", NodeType: "openwrt", Interface: "wg1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	var event Event
+	for _, item := range st.Events(20) {
+		if item.Action == "membership.save" && item.Before != nil && item.Before["interface"] == "wg0" {
+			event = item
+			break
+		}
+	}
+	if event.Action == "" {
+		t.Fatalf("expected membership update audit event, got %#v", st.Events(20))
+	}
+	if event.Actor != "admin" || event.Target != "membership:home/router" || event.Result != "success" {
+		t.Fatalf("unexpected audit identity fields: %#v", event)
+	}
+	if event.Before["role"] != "client" || event.After["role"] != "server" || event.After["interface"] != "wg1" {
+		t.Fatalf("unexpected audit change fields: %#v", event)
+	}
+	if _, err := time.Parse(time.RFC3339, event.CreatedAt); err != nil {
+		t.Fatalf("event timestamp should be RFC3339: %q", event.CreatedAt)
+	}
+}
+
 func TestDeleteNodeRemovesRelatedState(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	st, err := Open(path)

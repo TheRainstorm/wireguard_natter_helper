@@ -37,7 +37,7 @@ func NewID(prefix string) string {
 }
 
 func NowISO() string {
-	return time.Now().UTC().Truncate(time.Second).Format(time.RFC3339)
+	return time.Now().Truncate(time.Second).Format(time.RFC3339)
 }
 
 func Encode(v any) ([]byte, error) {

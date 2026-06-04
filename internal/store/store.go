@@ -97,6 +97,7 @@ type DomainMember struct {
 type Binding struct {
 	ID              string `json:"id"`
 	DomainID        string `json:"domain_id,omitempty"`
+	Auto            bool   `json:"auto,omitempty"`
 	ServerNodeID    string `json:"server_node_id"`
 	ServerInterface string `json:"server_interface"`
 	ClientNodeID    string `json:"client_node_id"`
@@ -164,6 +165,13 @@ type QueuedCommand struct {
 type Event struct {
 	Type      string         `json:"type"`
 	Severity  string         `json:"severity"`
+	Actor     string         `json:"actor,omitempty"`
+	Target    string         `json:"target,omitempty"`
+	Action    string         `json:"action,omitempty"`
+	Before    map[string]any `json:"before,omitempty"`
+	After     map[string]any `json:"after,omitempty"`
+	Result    string         `json:"result,omitempty"`
+	Error     string         `json:"error,omitempty"`
 	NodeID    string         `json:"node_id,omitempty"`
 	BindingID string         `json:"binding_id,omitempty"`
 	Message   string         `json:"message"`
@@ -413,7 +421,11 @@ func (s *Store) CreateNode(id, name, token string) error {
 	defer s.mu.Unlock()
 	s.data.Nodes[id] = Node{ID: id, Name: name, TokenHash: auth.HashToken(token), Approved: true}
 	s.runtime.NodeRuntime[id] = NodeRuntime{Status: "offline"}
-	s.addEventLocked("node.upserted", "info", id, "", fmt.Sprintf("Node %s saved", label(name, id)), map[string]any{"name": name})
+	s.addAuditEventLocked(Event{
+		Type: "node.upserted", Severity: "info", Actor: "admin", Target: "node:" + id, Action: "node.create",
+		After:  map[string]any{"node_id": id, "name": name, "approved": true},
+		Result: "success", NodeID: id, Message: fmt.Sprintf("Node %s saved", label(name, id)),
+	})
 	if err := s.saveLocked(); err != nil {
 		return err
 	}
@@ -470,7 +482,12 @@ func (s *Store) CreateDomain(id, name, joinCode, description string) error {
 		return errors.New("domain already exists")
 	}
 	s.data.Domains[id] = Domain{ID: id, Name: name, JoinCode: joinCode, Description: description, CreatedAt: protocol.NowISO()}
-	s.addEventLocked("domain.created", "info", "", "", fmt.Sprintf("Domain %s created", id), map[string]any{"domain_id": id, "name": name})
+	s.addAuditEventLocked(Event{
+		Type: "domain.created", Severity: "info", Actor: "admin", Target: "domain:" + id, Action: "domain.create",
+		After:  map[string]any{"domain_id": id, "name": name, "description": description},
+		Result: "success", Message: fmt.Sprintf("Domain %s created", id),
+		Payload: map[string]any{"domain_id": id, "name": name},
+	})
 	return s.saveLocked()
 }
 
@@ -539,7 +556,12 @@ func (s *Store) UpsertJoinedNode(domainID, nodeID, name, token string, meta map[
 	s.data.Nodes[node.ID] = node
 	s.runtime.NodeRuntime[node.ID] = runtime
 	s.runtime.PendingDomain[node.ID] = domainID
-	s.addEventLocked("node.joined", "info", node.ID, "", fmt.Sprintf("Node %s joined domain %s and is pending approval", label(node.Name, node.ID), domainID), map[string]any{"domain_id": domainID, "node_name": node.Name})
+	s.addAuditEventLocked(Event{
+		Type: "node.joined", Severity: "info", Actor: "agent:" + node.ID, Target: "domain:" + domainID, Action: "node.join",
+		After:  map[string]any{"node_id": node.ID, "node_name": node.Name, "domain_id": domainID, "status": "pending"},
+		Result: "success", NodeID: node.ID, Message: fmt.Sprintf("Node %s joined domain %s and is pending approval", label(node.Name, node.ID), domainID),
+		Payload: map[string]any{"domain_id": domainID, "node_name": node.Name},
+	})
 	if err := s.saveLocked(); err != nil {
 		return Node{}, false, err
 	}
@@ -589,7 +611,12 @@ func (s *Store) UpsertPendingNode(nodeID, name, token string, meta map[string]an
 	}
 	s.data.Nodes[node.ID] = node
 	s.runtime.NodeRuntime[node.ID] = runtime
-	s.addEventLocked("node.registered", "info", node.ID, "", fmt.Sprintf("Node %s registered and is pending approval", label(node.Name, node.ID)), map[string]any{"node_name": node.Name})
+	s.addAuditEventLocked(Event{
+		Type: "node.registered", Severity: "info", Actor: "agent:" + node.ID, Target: "node:" + node.ID, Action: "node.register",
+		After:  map[string]any{"node_id": node.ID, "node_name": node.Name, "status": "pending"},
+		Result: "success", NodeID: node.ID, Message: fmt.Sprintf("Node %s registered and is pending approval", label(node.Name, node.ID)),
+		Payload: map[string]any{"node_name": node.Name},
+	})
 	if err := s.saveLocked(); err != nil {
 		return Node{}, false, err
 	}
@@ -631,6 +658,7 @@ func (s *Store) ApproveNode(nodeID string, approval NodeApproval) (Node, error) 
 		node.Name = approval.Name
 	}
 	member := s.data.DomainMembers[domainMemberKey(domainID, nodeID)]
+	before := domainMemberAudit(member)
 	member.DomainID = domainID
 	member.NodeID = nodeID
 	member.Role = firstNonEmpty(approval.Role, member.Role)
@@ -682,13 +710,17 @@ func (s *Store) ApproveNode(nodeID string, approval NodeApproval) (Node, error) 
 		eventType = "node.updated"
 		message = fmt.Sprintf("Node %s updated in domain %s: role=%s interface=%s node_type=%s", label(node.Name, node.ID), member.DomainID, member.Role, member.Interface, member.NodeType)
 	}
-	s.addEventLocked(eventType, "info", node.ID, "", message, map[string]any{
-		"domain_id":     member.DomainID,
-		"role":          member.Role,
-		"interface":     member.Interface,
-		"node_type":     member.NodeType,
-		"config_type":   member.ConfigType,
-		"reload_method": member.ReloadMethod,
+	s.addAuditEventLocked(Event{
+		Type: eventType, Severity: "info", Actor: "admin", Target: "membership:" + domainMemberKey(member.DomainID, member.NodeID), Action: "membership.save",
+		Before: before, After: domainMemberAudit(member), Result: "success", NodeID: node.ID, Message: message,
+		Payload: map[string]any{
+			"domain_id":     member.DomainID,
+			"role":          member.Role,
+			"interface":     member.Interface,
+			"node_type":     member.NodeType,
+			"config_type":   member.ConfigType,
+			"reload_method": member.ReloadMethod,
+		},
 	})
 	if err := s.saveLocked(); err != nil {
 		return Node{}, err
@@ -709,7 +741,12 @@ func (s *Store) AddBinding(b Binding) error {
 	if endpointHost != "" && endpointPort > 0 {
 		s.runtime.BindingEndpoint[b.ID] = BindingEndpoint{Host: endpointHost, Port: endpointPort, UpdatedAt: protocol.NowISO()}
 	}
-	s.addEventLocked("binding.upserted", "info", "", b.ID, fmt.Sprintf("Binding %s saved: %s/%s -> %s/%s", b.ID, b.ServerNodeID, b.ServerInterface, b.ClientNodeID, b.ClientInterface), map[string]any{"domain_id": b.DomainID})
+	s.addAuditEventLocked(Event{
+		Type: "binding.upserted", Severity: "info", Actor: "admin", Target: "binding:" + b.ID, Action: "binding.save",
+		After: bindingAudit(b), Result: "success", BindingID: b.ID,
+		Message: fmt.Sprintf("Binding %s saved: %s/%s -> %s/%s", b.ID, b.ServerNodeID, b.ServerInterface, b.ClientNodeID, b.ClientInterface),
+		Payload: map[string]any{"domain_id": b.DomainID},
+	})
 	if err := s.saveLocked(); err != nil {
 		return err
 	}
@@ -752,7 +789,12 @@ func (s *Store) DeleteNode(nodeID string) error {
 		}
 	}
 	s.runtime.EndpointLeases = leases
-	s.addEventLocked("node.deleted", "info", nodeID, "", fmt.Sprintf("Node %s deleted with related memberships, commands, inventory, and bindings", label(node.Name, node.ID)), map[string]any{"name": node.Name})
+	s.addAuditEventLocked(Event{
+		Type: "node.deleted", Severity: "info", Actor: "admin", Target: "node:" + nodeID, Action: "node.delete",
+		Before: map[string]any{"node_id": node.ID, "name": node.Name}, Result: "success", NodeID: nodeID,
+		Message: fmt.Sprintf("Node %s deleted with related memberships, commands, inventory, and bindings", label(node.Name, node.ID)),
+		Payload: map[string]any{"name": node.Name},
+	})
 	if err := s.saveLocked(); err != nil {
 		return err
 	}
@@ -818,6 +860,8 @@ func (s *Store) ReconcileAutoBindings() ([]Binding, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var created []Binding
+	updated := 0
+	validAuto := map[string]bool{}
 	membersByDomain := map[string][]DomainMember{}
 	for _, member := range s.data.DomainMembers {
 		node, ok := s.data.Nodes[member.NodeID]
@@ -845,12 +889,10 @@ func (s *Store) ReconcileAutoBindings() ([]Binding, error) {
 						if !containsString(clientIface.Peers, serverIface.PublicKey) {
 							continue
 						}
-						if s.bindingExistsLocked(domainID, server.NodeID, serverIface.Name, client.NodeID, clientIface.Name, serverIface.PublicKey) {
-							continue
-						}
 						b := Binding{
 							ID:              autoBindingID(domainID, server.NodeID, serverIface.Name, client.NodeID, clientIface.Name),
 							DomainID:        domainID,
+							Auto:            true,
 							ServerNodeID:    server.NodeID,
 							ServerInterface: serverIface.Name,
 							ClientNodeID:    client.NodeID,
@@ -861,15 +903,40 @@ func (s *Store) ReconcileAutoBindings() ([]Binding, error) {
 							ReloadMethod:    client.ReloadMethod,
 							Enabled:         true,
 						}
+						validAuto[b.ID] = true
 						defaultBindingFields(&b)
+						if existing, ok := s.data.Bindings[b.ID]; ok {
+							if existing.Auto {
+								if !bindingsEqual(existing, b) {
+									s.data.Bindings[b.ID] = b
+									updated++
+									s.addAuditEventLocked(Event{
+										Type: "binding.auto_updated", Severity: "info", Actor: "daemon", Target: "binding:" + b.ID, Action: "binding.auto_update",
+										Before: bindingAudit(existing), After: bindingAudit(b), Result: "success", BindingID: b.ID,
+										Message: fmt.Sprintf("Auto-updated binding %s in domain %s from current domain membership and WireGuard inventory", b.ID, domainID),
+										Payload: map[string]any{"domain_id": domainID},
+									})
+								}
+								continue
+							}
+							continue
+						}
+						if s.bindingExistsLocked(domainID, server.NodeID, serverIface.Name, client.NodeID, clientIface.Name, serverIface.PublicKey) {
+							continue
+						}
 						s.data.Bindings[b.ID] = b
-						s.addEventLocked("binding.auto_created", "info", "", b.ID, fmt.Sprintf("Auto-created binding %s in domain %s: %s/%s -> %s/%s because client peer contains server public key %s", b.ID, domainID, b.ServerNodeID, b.ServerInterface, b.ClientNodeID, b.ClientInterface, shortKey(b.PeerPublicKey)), map[string]any{
-							"domain_id":        domainID,
-							"server_node_id":   b.ServerNodeID,
-							"server_interface": b.ServerInterface,
-							"client_node_id":   b.ClientNodeID,
-							"client_interface": b.ClientInterface,
-							"peer_public_key":  b.PeerPublicKey,
+						s.addAuditEventLocked(Event{
+							Type: "binding.auto_created", Severity: "info", Actor: "daemon", Target: "binding:" + b.ID, Action: "binding.auto_create",
+							After: bindingAudit(b), Result: "success", BindingID: b.ID,
+							Message: fmt.Sprintf("Auto-created binding %s in domain %s: %s/%s -> %s/%s because client peer contains server public key %s", b.ID, domainID, b.ServerNodeID, b.ServerInterface, b.ClientNodeID, b.ClientInterface, shortKey(b.PeerPublicKey)),
+							Payload: map[string]any{
+								"domain_id":        domainID,
+								"server_node_id":   b.ServerNodeID,
+								"server_interface": b.ServerInterface,
+								"client_node_id":   b.ClientNodeID,
+								"client_interface": b.ClientInterface,
+								"peer_public_key":  b.PeerPublicKey,
+							},
 						})
 						created = append(created, b)
 					}
@@ -877,17 +944,43 @@ func (s *Store) ReconcileAutoBindings() ([]Binding, error) {
 			}
 		}
 	}
-	if len(created) == 0 {
+	removed := 0
+	for id, binding := range s.data.Bindings {
+		if !binding.Auto && !isAutoBindingID(binding) {
+			continue
+		}
+		if validAuto[id] {
+			continue
+		}
+		delete(s.data.Bindings, id)
+		delete(s.runtime.BindingEndpoint, id)
+		removed++
+		s.addAuditEventLocked(Event{
+			Type: "binding.auto_deleted", Severity: "info", Actor: "daemon", Target: "binding:" + id, Action: "binding.auto_delete",
+			Before: bindingAudit(binding), Result: "success", BindingID: id,
+			Message: fmt.Sprintf("Auto-deleted binding %s because it no longer matches current domain membership and WireGuard inventory", id),
+			Payload: map[string]any{"domain_id": binding.DomainID},
+		})
+	}
+	if len(created) == 0 && updated == 0 && removed == 0 {
 		return nil, nil
 	}
-	return created, s.saveLocked()
+	if err := s.saveLocked(); err != nil {
+		return nil, err
+	}
+	return created, s.saveRuntimeLocked()
 }
 
 func (s *Store) QueueCommand(nodeID string, cmd protocol.Command) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.runtime.Commands[nodeID] = append(s.runtime.Commands[nodeID], QueuedCommand{Command: cmd, Status: "pending", CreatedAt: protocol.NowISO()})
-	s.addEventLocked("command.queued", "info", nodeID, "", fmt.Sprintf("Queued command %s action=%s for node %s", cmd.CommandID, cmd.Action, nodeID), map[string]any{"action": cmd.Action, "command_id": cmd.CommandID, "payload": cmd.Payload})
+	s.addAuditEventLocked(Event{
+		Type: "command.queued", Severity: "info", Actor: "daemon", Target: "node:" + nodeID, Action: "command.queue",
+		After:  map[string]any{"command_id": cmd.CommandID, "action": cmd.Action, "payload": cmd.Payload, "status": "pending"},
+		Result: "success", NodeID: nodeID, Message: fmt.Sprintf("Queued command %s action=%s for node %s", cmd.CommandID, cmd.Action, nodeID),
+		Payload: map[string]any{"action": cmd.Action, "command_id": cmd.CommandID, "payload": cmd.Payload},
+	})
 	return s.saveRuntimeLocked()
 }
 
@@ -922,7 +1015,18 @@ func (s *Store) CompleteCommand(nodeID, commandID string, result map[string]any)
 	if ok, exists := result["ok"]; exists && ok == false {
 		status = "failed"
 	}
-	s.addEventLocked("command.completed", "info", nodeID, "", fmt.Sprintf("Command %s %s on node %s: %s", commandID, status, nodeID, summarizeResult(result)), result)
+	severity := "info"
+	errorText := ""
+	if status == "failed" {
+		severity = "error"
+		errorText, _ = result["error"].(string)
+	}
+	s.addAuditEventLocked(Event{
+		Type: "command.completed", Severity: severity, Actor: "agent:" + nodeID, Target: "command:" + commandID, Action: "command.complete",
+		After:  map[string]any{"command_id": commandID, "status": status, "result": result},
+		Result: status, Error: errorText, NodeID: nodeID, Message: fmt.Sprintf("Command %s %s on node %s: %s", commandID, status, nodeID, summarizeResult(result)),
+		Payload: result,
+	})
 	return s.saveRuntimeLocked()
 }
 
@@ -939,12 +1043,17 @@ func (s *Store) SaveEndpointLease(nodeID string, lease EndpointLease) ([]Binding
 			bindings = append(bindings, s.bindingWithEndpointLocked(id, b))
 		}
 	}
-	s.addEventLocked("endpoint.updated", "info", nodeID, "", fmt.Sprintf("Node %s updated %s endpoint to %s:%d and matched %d binding(s)", nodeID, lease.ServerInterface, lease.PublicIP, lease.PublicPort, len(bindings)), map[string]any{
-		"server_node_id":   nodeID,
-		"server_interface": lease.ServerInterface,
-		"public_ip":        lease.PublicIP,
-		"public_port":      lease.PublicPort,
-		"matched_bindings": len(bindings),
+	s.addAuditEventLocked(Event{
+		Type: "endpoint.updated", Severity: "info", Actor: "agent:" + nodeID, Target: "interface:" + nodeID + "/" + lease.ServerInterface, Action: "endpoint.update",
+		After:  map[string]any{"public_ip": lease.PublicIP, "public_port": lease.PublicPort, "matched_bindings": len(bindings)},
+		Result: "success", NodeID: nodeID, Message: fmt.Sprintf("Node %s updated %s endpoint to %s:%d and matched %d binding(s)", nodeID, lease.ServerInterface, lease.PublicIP, lease.PublicPort, len(bindings)),
+		Payload: map[string]any{
+			"server_node_id":   nodeID,
+			"server_interface": lease.ServerInterface,
+			"public_ip":        lease.PublicIP,
+			"public_port":      lease.PublicPort,
+			"matched_bindings": len(bindings),
+		},
 	})
 	return bindings, s.saveRuntimeLocked()
 }
@@ -1117,9 +1226,124 @@ func (s *Store) addEventLocked(eventType, severity, nodeID, bindingID, message s
 		Type: eventType, Severity: severity, NodeID: nodeID, BindingID: bindingID,
 		Message: message, Payload: payload, CreatedAt: protocol.NowISO(),
 	}
+	switch eventType {
+	case "peer.unreachable":
+		event.Actor = "agent:" + nodeID
+		event.Target = "binding:" + bindingID
+		event.Action = "peer.unreachable"
+		event.After = map[string]any{
+			"binding_id":       bindingID,
+			"server_node_id":   payload["server_node_id"],
+			"server_interface": payload["server_interface"],
+			"client_interface": payload["interface"],
+			"last_handshake":   payload["last_handshake"],
+		}
+		event.Result = "warning"
+	case "peer.recovered":
+		event.Actor = "agent:" + nodeID
+		event.Target = "binding:" + bindingID
+		event.Action = "peer.recovered"
+		event.After = map[string]any{
+			"binding_id":       bindingID,
+			"client_interface": payload["interface"],
+			"last_handshake":   payload["last_handshake"],
+		}
+	case "agent.report":
+		event.Actor = "agent:" + nodeID
+		event.Target = "node:" + nodeID
+		event.Action = "agent.report"
+		event.After = payload
+	default:
+		if nodeID != "" {
+			event.Actor = "agent:" + nodeID
+			event.Target = "node:" + nodeID
+		} else {
+			event.Actor = "daemon"
+			event.Target = eventType
+		}
+		if bindingID != "" {
+			event.Target = "binding:" + bindingID
+		}
+		event.Action = eventType
+		event.After = payload
+	}
+	s.addAuditEventLocked(event)
+}
+
+func (s *Store) addAuditEventLocked(event Event) {
+	if event.CreatedAt == "" {
+		event.CreatedAt = protocol.NowISO()
+	}
+	if event.Result == "" {
+		if event.Error != "" || event.Severity == "error" {
+			event.Result = "failed"
+		} else {
+			event.Result = "success"
+		}
+	}
 	if err := s.appendEventFileLocked(event); err != nil {
 		fmt.Fprintf(os.Stderr, "wgnh event log write failed: %v\n", err)
 	}
+}
+
+func domainMemberAudit(member DomainMember) map[string]any {
+	if member.DomainID == "" && member.NodeID == "" {
+		return nil
+	}
+	return map[string]any{
+		"domain_id":         member.DomainID,
+		"node_id":           member.NodeID,
+		"role":              member.Role,
+		"node_type":         member.NodeType,
+		"interface":         member.Interface,
+		"config_type":       member.ConfigType,
+		"reload_method":     member.ReloadMethod,
+		"natter_managed":    member.NatterManaged,
+		"natter_command":    member.NatterCommand,
+		"natter_stop_wg":    member.NatterStopWireGuard,
+		"natter_timeout":    member.NatterTimeoutSeconds,
+		"natter_control":    member.NatterWireGuardControl,
+		"natter_delay":      member.NatterRestartDelaySeconds,
+		"natter_configured": member.NatterConfigured,
+	}
+}
+
+func bindingAudit(binding Binding) map[string]any {
+	return map[string]any{
+		"id":               binding.ID,
+		"domain_id":        binding.DomainID,
+		"auto":             binding.Auto,
+		"server_node_id":   binding.ServerNodeID,
+		"server_interface": binding.ServerInterface,
+		"client_node_id":   binding.ClientNodeID,
+		"client_interface": binding.ClientInterface,
+		"peer_public_key":  binding.PeerPublicKey,
+		"config_type":      binding.ConfigType,
+		"reload_method":    binding.ReloadMethod,
+		"enabled":          binding.Enabled,
+	}
+}
+
+func bindingsEqual(a, b Binding) bool {
+	return a.ID == b.ID &&
+		a.DomainID == b.DomainID &&
+		a.Auto == b.Auto &&
+		a.ServerNodeID == b.ServerNodeID &&
+		a.ServerInterface == b.ServerInterface &&
+		a.ClientNodeID == b.ClientNodeID &&
+		a.ClientInterface == b.ClientInterface &&
+		a.PeerPublicKey == b.PeerPublicKey &&
+		a.ConfigType == b.ConfigType &&
+		a.ConfigPath == b.ConfigPath &&
+		a.ReloadMethod == b.ReloadMethod &&
+		a.Enabled == b.Enabled
+}
+
+func isAutoBindingID(binding Binding) bool {
+	if binding.DomainID == "" || binding.ServerNodeID == "" || binding.ServerInterface == "" || binding.ClientNodeID == "" || binding.ClientInterface == "" {
+		return false
+	}
+	return binding.ID == autoBindingID(binding.DomainID, binding.ServerNodeID, binding.ServerInterface, binding.ClientNodeID, binding.ClientInterface)
 }
 
 func (s *Store) nodeWithRuntime(node Node) Node {
