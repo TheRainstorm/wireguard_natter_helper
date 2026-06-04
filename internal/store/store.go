@@ -949,7 +949,7 @@ func (s *Store) ReconcileAutoBindings() ([]Binding, error) {
 		if !binding.Auto && !isAutoBindingID(binding) {
 			continue
 		}
-		if validAuto[id] {
+		if validAuto[id] || bindingMatchesDomainMembers(binding, s.data.DomainMembers) {
 			continue
 		}
 		delete(s.data.Bindings, id)
@@ -958,7 +958,7 @@ func (s *Store) ReconcileAutoBindings() ([]Binding, error) {
 		s.addAuditEventLocked(Event{
 			Type: "binding.auto_deleted", Severity: "info", Actor: "daemon", Target: "binding:" + id, Action: "binding.auto_delete",
 			Before: bindingAudit(binding), Result: "success", BindingID: id,
-			Message: fmt.Sprintf("Auto-deleted binding %s because it no longer matches current domain membership and WireGuard inventory", id),
+			Message: fmt.Sprintf("Auto-deleted binding %s because it no longer matches current domain membership", id),
 			Payload: map[string]any{"domain_id": binding.DomainID},
 		})
 	}
@@ -1344,6 +1344,18 @@ func isAutoBindingID(binding Binding) bool {
 		return false
 	}
 	return binding.ID == autoBindingID(binding.DomainID, binding.ServerNodeID, binding.ServerInterface, binding.ClientNodeID, binding.ClientInterface)
+}
+
+func bindingMatchesDomainMembers(binding Binding, members map[string]DomainMember) bool {
+	server, ok := members[domainMemberKey(binding.DomainID, binding.ServerNodeID)]
+	if !ok || server.Role != "server" || server.Interface != binding.ServerInterface {
+		return false
+	}
+	client, ok := members[domainMemberKey(binding.DomainID, binding.ClientNodeID)]
+	if !ok || client.Role != "client" || client.Interface != binding.ClientInterface {
+		return false
+	}
+	return true
 }
 
 func (s *Store) nodeWithRuntime(node Node) Node {

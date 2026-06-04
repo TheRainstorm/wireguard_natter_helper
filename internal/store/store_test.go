@@ -256,6 +256,54 @@ func TestReconcileAutoBindingsDeletesStaleAutoBinding(t *testing.T) {
 	}
 }
 
+func TestReconcileAutoBindingsKeepsAutoBindingDuringInventoryGap(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateDomain("home", "Home", "join-home", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.UpsertPendingNode("op1", "op1", "op1-token", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.UpsertPendingNode("mi4a", "mi4a", "mi4a-token", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ApproveNode("op1", NodeApproval{DomainID: "home", Role: "server", NodeType: "openwrt", Interface: "wg1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ApproveNode("mi4a", NodeApproval{DomainID: "home", Role: "client", NodeType: "openwrt", Interface: "wg1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpdateWGInterfaces("op1", []WGInterface{{Name: "wg1", PublicKey: "op1-key"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpdateWGInterfaces("mi4a", []WGInterface{{Name: "wg1", PublicKey: "mi4a-key", Peers: []string{"op1-key"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if created, err := st.ReconcileAutoBindings(); err != nil || len(created) != 1 {
+		t.Fatalf("expected initial auto binding, created=%#v err=%v", created, err)
+	}
+
+	if err := st.UpdateWGInterfaces("mi4a", []WGInterface{{Name: "wg1", PublicKey: "mi4a-key"}}); err != nil {
+		t.Fatal(err)
+	}
+	if created, err := st.ReconcileAutoBindings(); err != nil || len(created) != 0 {
+		t.Fatalf("inventory gap should not create replacement binding, created=%#v err=%v", created, err)
+	}
+	bindings := st.Bindings()
+	if len(bindings) != 1 || bindings[0].ServerInterface != "wg1" || bindings[0].ClientInterface != "wg1" {
+		t.Fatalf("auto binding should survive inventory gap: %#v", bindings)
+	}
+	for _, event := range st.Events(20) {
+		if event.Action == "binding.auto_delete" {
+			t.Fatalf("inventory gap should not emit auto delete: %#v", event)
+		}
+	}
+}
+
 func TestAuditEventsIncludeStructuredChangeFields(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	st, err := Open(path)
