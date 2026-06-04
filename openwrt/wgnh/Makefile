@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=wgnh
 PKG_VERSION:=0.1.3
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 PKG_MAINTAINER:=wgnh maintainers
 PKG_LICENSE:=MIT
 
@@ -30,6 +30,7 @@ define Package/wgnh/description
 endef
 
 define Package/wgnh/conffiles
+/etc/config/wgnh
 /etc/wgnh/node-state.json
 /etc/wgnh/state.json
 /etc/wgnh/admin-token
@@ -40,6 +41,16 @@ define Build/Prepare
 	$(CP) $(CURDIR)/../../go.mod $(PKG_BUILD_DIR)/
 	$(CP) $(CURDIR)/../../cmd $(PKG_BUILD_DIR)/
 	$(CP) $(CURDIR)/../../internal $(PKG_BUILD_DIR)/
+endef
+
+define Package/wgnh/install
+	$(call GoPackage/Package/Install/Bin,$(1))
+	$(INSTALL_DIR) $(1)/etc/config
+	$(INSTALL_CONF) $(CURDIR)/root/etc/config/wgnh $(1)/etc/config/wgnh
+	$(INSTALL_DIR) $(1)/etc/init.d
+	$(INSTALL_BIN) $(CURDIR)/root/etc/init.d/wgnh-agent $(1)/etc/init.d/wgnh-agent
+	$(INSTALL_BIN) $(CURDIR)/root/etc/init.d/wgnh-daemon $(1)/etc/init.d/wgnh-daemon
+	$(INSTALL_DIR) $(1)/etc/wgnh
 endef
 
 $(eval $(call GoBinPackage,wgnh))

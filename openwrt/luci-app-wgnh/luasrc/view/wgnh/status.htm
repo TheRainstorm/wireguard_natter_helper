@@ -5,35 +5,44 @@
     display: grid;
     gap: 16px;
   }
-  .wgnh-head {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 12px;
-    padding: 14px 16px;
-    border: 1px solid #d9e0e7;
-    border-radius: 8px;
-    background: #fff;
-  }
-  .wgnh-title {
-    margin: 0;
-    font-size: 20px;
-  }
-  .wgnh-sub {
-    color: #667085;
-    margin-top: 4px;
-  }
-  .wgnh-stats {
-    display: grid;
-    grid-template-columns: repeat(7, minmax(110px, 1fr));
-    gap: 12px;
-  }
+  .wgnh-head,
+  .wgnh-connect,
   .wgnh-stat,
   .wgnh-panel {
     border: 1px solid #d9e0e7;
     border-radius: 8px;
     background: #fff;
-    overflow: hidden;
+    box-shadow: 0 10px 28px rgba(30, 41, 59, .08);
+  }
+  .wgnh-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 14px;
+    padding: 14px 16px;
+  }
+  .wgnh-title {
+    margin: 0;
+    font-size: 20px;
+  }
+  .wgnh-sub,
+  .wgnh-muted,
+  .wgnh-mini {
+    color: #667085;
+  }
+  .wgnh-mini {
+    font-size: 12px;
+  }
+  .wgnh-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .wgnh-stats {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(110px, 1fr));
+    gap: 12px;
   }
   .wgnh-stat {
     padding: 14px;
@@ -47,17 +56,62 @@
     font-size: 26px;
     font-weight: 700;
   }
+  .wgnh-panel {
+    overflow: hidden;
+  }
   .wgnh-panel-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
     padding: 12px 14px;
     border-bottom: 1px solid #d9e0e7;
     background: #eef3f8;
     font-weight: 700;
   }
-  .wgnh-help {
-    padding: 12px 14px;
-    color: #667085;
+  .wgnh-form-grid {
+    display: grid;
+    grid-template-columns: 180px minmax(180px, 1fr) minmax(220px, 1.4fr) auto;
+    gap: 10px;
+    align-items: end;
+    padding: 14px;
     border-bottom: 1px solid #d9e0e7;
     background: #fbfcfd;
+  }
+  .wgnh-form-grid label,
+  .wgnh-approval label {
+    display: grid;
+    gap: 4px;
+    color: #667085;
+    font-size: 12px;
+    font-weight: 650;
+  }
+  .wgnh-form-grid input,
+  .wgnh-approval input,
+  .wgnh-approval select {
+    min-height: 34px;
+  }
+  .wgnh-domain-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 12px;
+    padding: 14px;
+  }
+  .wgnh-domain {
+    border: 1px solid #d9e0e7;
+    border-radius: 8px;
+    padding: 12px;
+    cursor: pointer;
+    background: #fff;
+  }
+  .wgnh-domain.active {
+    border-color: #0f766e;
+    box-shadow: inset 0 0 0 1px #0f766e;
+  }
+  .wgnh-domain-title {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
   }
   .wgnh-scroll {
     overflow-x: auto;
@@ -109,15 +163,38 @@
   .wgnh-error {
     color: #b42318;
   }
+  .wgnh-warning {
+    color: #b54708;
+  }
   .wgnh-empty {
     padding: 18px;
     color: #667085;
   }
+  .wgnh-node-ref {
+    display: grid;
+    gap: 3px;
+    min-width: 170px;
+    white-space: normal;
+  }
+  .wgnh-approval {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(120px, 1fr)) auto auto;
+    gap: 8px;
+    min-width: 1080px;
+  }
+  .wgnh-check {
+    display: inline-flex !important;
+    align-items: center;
+    gap: 6px;
+    min-height: 34px;
+    color: #1d2430 !important;
+    font-size: 13px !important;
+  }
   .wgnh-log {
     margin: 0;
     padding: 12px 14px;
-    min-height: 180px;
-    max-height: 420px;
+    min-height: 160px;
+    max-height: 360px;
     overflow: auto;
     color: #d1d5db;
     background: #111827;
@@ -144,6 +221,9 @@
     .wgnh-stats {
       grid-template-columns: repeat(2, minmax(120px, 1fr));
     }
+    .wgnh-form-grid {
+      grid-template-columns: 1fr;
+    }
   }
 </style>
 
@@ -151,46 +231,48 @@
   <div class="wgnh-head">
     <div>
       <h2 class="wgnh-title"><%:WireGuard Natter Helper%></h2>
-      <div id="wgnh-subtitle" class="wgnh-sub"><%:Loading remote daemon and local service status...%></div>
+      <div id="wgnh-subtitle" class="wgnh-sub"><%:Loading daemon control panel...%></div>
     </div>
-    <button class="cbi-button cbi-button-reload" id="wgnh-refresh"><%:Refresh%></button>
+    <div class="wgnh-toolbar">
+      <button class="cbi-button cbi-button-reload" id="wgnh-refresh"><%:Refresh%></button>
+      <button class="cbi-button" id="wgnh-pause"><%:Pause auto refresh%></button>
+    </div>
   </div>
 
   <div class="wgnh-stats">
+    <div class="wgnh-stat"><div class="wgnh-label"><%:Domains%></div><div id="wgnh-stat-domains" class="wgnh-value">-</div></div>
     <div class="wgnh-stat"><div class="wgnh-label"><%:Nodes%></div><div id="wgnh-stat-nodes" class="wgnh-value">-</div></div>
     <div class="wgnh-stat"><div class="wgnh-label"><%:Online nodes%></div><div id="wgnh-stat-online" class="wgnh-value">-</div></div>
     <div class="wgnh-stat"><div class="wgnh-label"><%:Pending%></div><div id="wgnh-stat-pending" class="wgnh-value">-</div></div>
     <div class="wgnh-stat"><div class="wgnh-label"><%:WG interfaces%></div><div id="wgnh-stat-interfaces" class="wgnh-value">-</div></div>
     <div class="wgnh-stat"><div class="wgnh-label"><%:Bindings%></div><div id="wgnh-stat-bindings" class="wgnh-value">-</div></div>
-    <div class="wgnh-stat"><div class="wgnh-label"><%:Endpoints%></div><div id="wgnh-stat-endpoints" class="wgnh-value">-</div></div>
     <div class="wgnh-stat"><div class="wgnh-label"><%:Error events%></div><div id="wgnh-stat-errors" class="wgnh-value">-</div></div>
   </div>
 
   <div class="wgnh-panel">
-    <div class="wgnh-panel-head"><%:Local OpenWrt services%></div>
-    <div class="wgnh-help"><%:This section shows services running on this router. It is useful when this router is configured as a wgnh agent.%></div>
+    <div class="wgnh-panel-head"><%:Domain%><span class="wgnh-muted"><%:Create a network, then approve joined nodes below.%></span></div>
+    <div class="wgnh-form-grid">
+      <label><%:Domain ID%><input id="wgnh-domain-id" placeholder="home"></label>
+      <label><%:Name%><input id="wgnh-domain-name" placeholder="Home network"></label>
+      <label><%:Description%><input id="wgnh-domain-description" placeholder="optional"></label>
+      <button class="cbi-button cbi-button-add" id="wgnh-create-domain"><%:Create Domain%></button>
+    </div>
+    <div id="wgnh-domain-result" class="wgnh-empty" style="display:none"></div>
+    <div id="wgnh-domains" class="wgnh-domain-grid"><div class="wgnh-empty"><%:No data loaded%></div></div>
+  </div>
+
+  <div class="wgnh-panel">
+    <div class="wgnh-panel-head"><%:Nodes%><span class="wgnh-muted"><%:Approve, rename, and edit domain-specific node settings.%></span></div>
     <div class="wgnh-scroll">
       <table class="wgnh-table">
-        <thead><tr><th><%:Service%></th><th><%:Enabled%></th><th><%:Runtime status%></th></tr></thead>
-        <tbody id="wgnh-local-services"><tr><td colspan="3" class="wgnh-empty"><%:No data loaded%></td></tr></tbody>
+        <thead><tr><th><%:Node%></th><th><%:Domain%></th><th><%:Role%></th><th><%:Status%></th><th><%:Platform%></th><th><%:Interface%></th><th><%:Last seen%></th><th><%:Actions%></th></tr></thead>
+        <tbody id="wgnh-nodes"><tr><td colspan="8" class="wgnh-empty"><%:No data loaded%></td></tr></tbody>
       </table>
     </div>
   </div>
 
   <div class="wgnh-panel">
-    <div class="wgnh-panel-head"><%:Remote daemon nodes%></div>
-    <div class="wgnh-help"><%:This section comes from the configured daemon address. It shows all nodes known by the daemon, not only this router.%></div>
-    <div class="wgnh-scroll">
-      <table class="wgnh-table">
-        <thead><tr><th><%:Node%></th><th><%:Domain%></th><th><%:Role%></th><th><%:Status%></th><th><%:Interface%></th><th><%:Platform%></th><th><%:Last seen%></th></tr></thead>
-        <tbody id="wgnh-nodes"><tr><td colspan="7" class="wgnh-empty"><%:No data loaded%></td></tr></tbody>
-      </table>
-    </div>
-  </div>
-
-  <div class="wgnh-panel">
-    <div class="wgnh-panel-head"><%:Remote daemon WireGuard inventory%></div>
-    <div class="wgnh-help"><%:Automatic bindings are created when a server public key appears in a client peer list in the same domain.%></div>
+    <div class="wgnh-panel-head"><%:WireGuard automatic discovery%><span class="wgnh-muted"><%:Bindings are discovered inside the selected domain.%></span></div>
     <div class="wgnh-scroll">
       <table class="wgnh-table">
         <thead><tr><th><%:Node%></th><th><%:Interface%></th><th><%:Public key%></th><th><%:Listen%></th><th><%:Peers%></th><th><%:Config%></th><th><%:Updated%></th></tr></thead>
@@ -200,7 +282,7 @@
   </div>
 
   <div class="wgnh-panel">
-    <div class="wgnh-panel-head"><%:Remote daemon WireGuard bindings%></div>
+    <div class="wgnh-panel-head"><%:WireGuard bindings%></div>
     <div class="wgnh-scroll">
       <table class="wgnh-table">
         <thead><tr><th><%:Binding%></th><th><%:Server%></th><th><%:Client%></th><th><%:Endpoint%></th><th><%:Config%></th><th><%:Action%></th></tr></thead>
@@ -210,18 +292,23 @@
   </div>
 
   <div class="wgnh-panel">
-    <div class="wgnh-panel-head"><%:Remote daemon recent events%></div>
+    <div class="wgnh-panel-head"><%:Recent events%></div>
     <div class="wgnh-scroll">
       <table class="wgnh-table">
-        <thead><tr><th><%:Time%></th><th><%:Severity%></th><th><%:Type%></th><th><%:Node%></th><th><%:Binding%></th><th><%:Message%></th><th><%:Payload%></th></tr></thead>
+        <thead><tr><th><%:Time%></th><th>Actor</th><th>Target</th><th>Action</th><th>Before / After</th><th>Result</th><th>Error</th></tr></thead>
         <tbody id="wgnh-events"><tr><td colspan="7" class="wgnh-empty"><%:No data loaded%></td></tr></tbody>
       </table>
     </div>
   </div>
 
   <div class="wgnh-panel">
-    <div class="wgnh-panel-head"><%:Local wgnh logs%></div>
-    <div class="wgnh-help"><%:Recent logread lines matching wgnh on this router. Agent runtime errors and reconnect messages are shown here.%></div>
+    <div class="wgnh-panel-head"><%:Local OpenWrt services%></div>
+    <div class="wgnh-scroll">
+      <table class="wgnh-table">
+        <thead><tr><th><%:Service%></th><th><%:Enabled%></th><th><%:Runtime status%></th></tr></thead>
+        <tbody id="wgnh-local-services"><tr><td colspan="3" class="wgnh-empty"><%:No data loaded%></td></tr></tbody>
+      </table>
+    </div>
     <pre id="wgnh-local-logs" class="wgnh-log"><%:No data loaded%></pre>
   </div>
 </div>
@@ -234,27 +321,36 @@
 
   var summaryURL = '<%=url("admin/vpn/wgnh/api/summary")%>';
   var localURL = '<%=url("admin/vpn/wgnh/api/local")%>';
+  var createDomainURL = '<%=url("admin/vpn/wgnh/api/create_domain")%>';
+  var approveNodeURL = '<%=url("admin/vpn/wgnh/api/approve_node")%>';
+  var deleteNodeURL = '<%=url("admin/vpn/wgnh/api/delete_node")%>';
   var runURL = '<%=url("admin/vpn/wgnh/api/run_natter")%>';
+  var storageSelectedDomain = 'wgnh.luci.selectedDomain';
+  var selectedDomainID = localStorage.getItem(storageSelectedDomain) || '';
   var refreshTimer = null;
+  var autoRefreshPaused = false;
+  var nodeFormDirty = false;
 
-  document.getElementById('wgnh-refresh').addEventListener('click', loadSummary);
-  loadSummary();
+  document.getElementById('wgnh-refresh').addEventListener('click', function() { loadSummary(false); });
+  document.getElementById('wgnh-pause').addEventListener('click', toggleAutoRefresh);
+  document.getElementById('wgnh-create-domain').addEventListener('click', createDomain);
+  loadSummary(false);
 
-  async function loadSummary() {
+  async function loadSummary(auto) {
     clearTimer();
+    if (auto && (autoRefreshPaused || nodeFormDirty || isEditingNodeConfig())) {
+      scheduleRefresh();
+      return;
+    }
     var errors = [];
     try {
-      var localRes = await fetch(localURL, { credentials: 'same-origin' });
-      var localJson = await localRes.json();
-      if (!localJson.ok) throw new Error(localJson.error || 'local request failed');
+      var localJson = await fetchJSON(localURL);
       renderLocal(localJson.data);
     } catch (err) {
       errors.push('<%:local status%>: ' + err.message);
     }
     try {
-      var res = await fetch(summaryURL, { credentials: 'same-origin' });
-      var json = await res.json();
-      if (!json.ok) throw new Error(json.error || 'request failed');
+      var json = await fetchJSON(summaryURL);
       render(json.data);
     } catch (err) {
       errors.push('<%:remote daemon%>: ' + err.message);
@@ -263,46 +359,50 @@
       document.getElementById('wgnh-subtitle').textContent = '<%:Status load issue:%> ' + errors.join('; ');
       toast('<%:Failed:%> ' + errors.join('; '));
     }
-    refreshTimer = setTimeout(loadSummary, 15000);
+    scheduleRefresh();
   }
 
-  async function runNatter(serverNodeID, serverInterface, button) {
-    button.disabled = true;
-    try {
-      var body = new URLSearchParams();
-      body.set('server_node_id', serverNodeID);
-      body.set('server_interface', serverInterface);
-      var res = await fetch(runURL, {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: body.toString()
-      });
-      var json = await res.json();
-      if (!json.ok) throw new Error(json.error || 'request failed');
-      var id = json.command && json.command.command_id ? json.command.command_id : 'queued';
-      toast('<%:natter.run queued:%> ' + id);
-      loadSummary();
-    } catch (err) {
-      toast('<%:Failed:%> ' + err.message);
-    } finally {
-      button.disabled = false;
-    }
+  async function fetchJSON(url, opts) {
+    var res = await fetch(url, Object.assign({ credentials: 'same-origin' }, opts || {}));
+    var json = await res.json();
+    if (!json.ok) throw new Error(json.error || 'request failed');
+    return json;
+  }
+
+  async function postForm(url, values) {
+    var body = new URLSearchParams();
+    Object.keys(values).forEach(function(key) {
+      if (values[key] !== undefined && values[key] !== null) body.set(key, values[key]);
+    });
+    return fetchJSON(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body.toString()
+    });
   }
 
   function render(data) {
-    document.getElementById('wgnh-subtitle').innerHTML = 'daemon <span class="wgnh-code">' + esc(data.daemon_addr) + '</span> · ' + esc(data.generated_at) + ' · <%:Auto refresh 15s%>';
+    var domains = data.domains || [];
+    if (!selectedDomainID && domains.length) selectedDomainID = domains[0].id;
+    if (selectedDomainID && domains.length && !domains.some(function(domain) { return domain.id === selectedDomainID; })) selectedDomainID = domains[0].id;
+    localStorage.setItem(storageSelectedDomain, selectedDomainID || '');
+    document.getElementById('wgnh-subtitle').innerHTML = 'daemon <span class="wgnh-code">' + esc(data.daemon_addr) + '</span> · ' + esc(formatTime(data.generated_at)) + ' · ' + (autoRefreshPaused ? '<%:Auto refresh paused%>' : '<%:Auto refresh 15s%>');
+    document.getElementById('wgnh-stat-domains').textContent = data.stats.domains;
     document.getElementById('wgnh-stat-nodes').textContent = data.stats.nodes;
     document.getElementById('wgnh-stat-online').textContent = data.stats.online;
     document.getElementById('wgnh-stat-pending').textContent = data.stats.pending;
     document.getElementById('wgnh-stat-interfaces').textContent = data.stats.interfaces;
     document.getElementById('wgnh-stat-bindings').textContent = data.stats.bindings;
-    document.getElementById('wgnh-stat-endpoints').textContent = data.stats.with_endpoint;
     document.getElementById('wgnh-stat-errors').textContent = data.stats.errors;
-    renderNodes(data.nodes || []);
-    renderWireGuard(data.wireguard_interfaces || []);
-    renderBindings(data.bindings || []);
-    renderEvents(data.events || []);
+    var nodeMap = buildNodeMap(data.nodes || []);
+    var members = data.domain_members || [];
+    var memberMap = buildMemberMap(members);
+    var selectedMembers = members.filter(function(member) { return member.domain_id === selectedDomainID; });
+    renderDomains(domains);
+    renderNodes(data.nodes || [], domains, memberMap, selectedMembers);
+    renderWireGuard(filterInterfaces(data.wireguard_interfaces || [], selectedMembers), nodeMap);
+    renderBindings(filterBindings(data.bindings || []), nodeMap);
+    renderEvents(filterEvents(data.events || [], selectedMembers), nodeMap);
   }
 
   function renderLocal(data) {
@@ -320,26 +420,158 @@
     document.getElementById('wgnh-local-logs').textContent = data.logs || '<%:No wgnh log lines found%>';
   }
 
-  function renderNodes(nodes) {
-    var body = document.getElementById('wgnh-nodes');
-    if (!nodes.length) {
-      body.innerHTML = '<tr><td colspan="7" class="wgnh-empty"><%:No nodes%></td></tr>';
+  function renderDomains(domains) {
+    var body = document.getElementById('wgnh-domains');
+    if (!domains.length) {
+      body.innerHTML = '<div class="wgnh-empty"><%:No domains. Create one, then start agents with only daemon_addr.%></div>';
       return;
     }
-    body.innerHTML = nodes.map(function(node) {
-      return '<tr>'
-        + '<td><span class="wgnh-code">' + esc(node.id) + '</span></td>'
-        + '<td><span class="wgnh-code">' + esc(node.domain_id || '-') + '</span></td>'
-        + '<td>' + esc(node.role) + '</td>'
-        + '<td><span class="wgnh-badge wgnh-' + attr(node.status) + '">' + esc(node.status) + '</span> ' + (node.approved ? '<span class="wgnh-badge wgnh-online">approved</span>' : '<span class="wgnh-badge"><%:pending%></span>') + '</td>'
-        + '<td><span class="wgnh-code">' + esc(node.interface || '-') + '</span><br>' + esc((node.config_type || '') + ' ' + (node.reload_method || '')) + '</td>'
-        + '<td>' + esc(node.platform) + '</td>'
-        + '<td>' + esc(node.last_seen_at) + '</td>'
-        + '</tr>';
+    body.innerHTML = domains.map(function(domain, idx) {
+      return '<div class="wgnh-domain ' + (domain.id === selectedDomainID ? 'active' : '') + '" data-domain-index="' + idx + '">'
+        + '<div class="wgnh-domain-title"><div><strong>' + esc(domain.name || domain.id) + '</strong><div class="wgnh-mini"><span class="wgnh-code">' + esc(domain.id) + '</span></div></div>'
+        + '<span class="wgnh-badge">' + esc(formatTime(domain.created_at)) + '</span></div>'
+        + '<div class="wgnh-muted">' + esc(domain.description || '<%:No description%>') + '</div>'
+        + '</div>';
     }).join('');
+    body.querySelectorAll('[data-domain-index]').forEach(function(el) {
+      el.addEventListener('click', function() {
+        selectedDomainID = domains[Number(el.dataset.domainIndex)].id;
+        localStorage.setItem(storageSelectedDomain, selectedDomainID);
+        nodeFormDirty = false;
+        loadSummary(false);
+      });
+    });
   }
 
-  function renderWireGuard(items) {
+  function renderNodes(nodes, domains, memberMap) {
+    var body = document.getElementById('wgnh-nodes');
+    if (!nodes.length) {
+      body.innerHTML = '<tr><td colspan="8" class="wgnh-empty"><%:No nodes. Start an agent and it will appear here for approval.%></td></tr>';
+      return;
+    }
+    body.innerHTML = nodes.map(function(node, idx) {
+      var member = memberMap[selectedDomainID + '/' + node.id] || {};
+      return '<tr>'
+        + '<td><span class="wgnh-node-ref"><strong>' + esc(nodeLabel(node)) + '</strong><span class="wgnh-mini">' + esc(node.id || '') + '</span></span></td>'
+        + '<td><span class="wgnh-code">' + esc(member.domain_id || selectedDomainID || '-') + '</span></td>'
+        + '<td>' + esc(member.role || '-') + '</td>'
+        + '<td><span class="wgnh-badge wgnh-' + attr(node.status) + '">' + esc(node.status || '-') + '</span> ' + (member.node_id ? '<span class="wgnh-badge wgnh-online">in domain</span>' : '<span class="wgnh-badge wgnh-warning"><%:not in domain%></span>') + '</td>'
+        + '<td>' + esc(member.node_type || node.node_type || node.platform || '-') + '<div class="wgnh-mini">' + esc(node.agent_version || '') + '</div></td>'
+        + '<td><span class="wgnh-code">' + esc(member.interface || '-') + '</span><div class="wgnh-mini">' + esc((member.config_type || '') + ' ' + (member.reload_method || '')) + '</div></td>'
+        + '<td>' + esc(formatTime(node.last_seen_at)) + '</td>'
+        + '<td>' + approvalControls(node, member, idx, domains) + '</td>'
+        + '</tr>';
+    }).join('');
+    body.querySelectorAll('[data-node-form]').forEach(function(el) {
+      el.addEventListener('input', markNodeFormDirty);
+      el.addEventListener('change', markNodeFormDirty);
+    });
+    body.querySelectorAll('select[data-role]').forEach(function(select) {
+      updateNatterControls(select);
+      select.addEventListener('change', function() { updateNatterControls(select); });
+    });
+    body.querySelectorAll('button[data-approve]').forEach(function(button) {
+      button.addEventListener('click', function() { approveNode(nodes[Number(button.dataset.approve)], Number(button.dataset.approve), button); });
+    });
+    body.querySelectorAll('button[data-delete-node]').forEach(function(button) {
+      button.addEventListener('click', function() { deleteNode(nodes[Number(button.dataset.deleteNode)], button); });
+    });
+  }
+
+  function approvalControls(node, member, idx, domains) {
+    var id = 'wgnh-approve-' + idx + '-';
+    var currentDomain = member.domain_id || selectedDomainID || node.domain_id;
+    var domainOptions = domains.map(function(domain) {
+      return '<option value="' + escAttr(domain.id) + '"' + selected(domain.id, currentDomain) + '>' + esc(domain.name || domain.id) + '</option>';
+    }).join('');
+    var hasMember = !!member.node_id;
+    var nodeType = member.node_type || node.node_type || inferNodeType(node.platform);
+    return '<div class="wgnh-approval">'
+      + '<input data-node-form id="' + id + 'name" placeholder="<%:Node name%>" value="' + escAttr(node.name || '') + '">'
+      + '<select data-node-form id="' + id + 'domain">' + domainOptions + '</select>'
+      + '<select data-node-form id="' + id + 'role" data-role="' + idx + '"><option value="client"' + selected('client', member.role || 'client') + '>client</option><option value="server"' + selected('server', member.role) + '>server</option></select>'
+      + '<select data-node-form id="' + id + 'nodeType"><option value="openwrt"' + selected('openwrt', nodeType) + '>openwrt</option><option value="linux"' + selected('linux', nodeType) + '>linux</option></select>'
+      + '<input data-node-form id="' + id + 'interface" placeholder="wg0" value="' + escAttr(member.interface || node.interface || 'wg0') + '">'
+      + '<div class="wgnh-mini"><%:Auto config follows node type%></div>'
+      + '<div id="' + id + 'natterGroup">'
+      + '<input data-node-form id="' + id + 'natterCommand" placeholder="python3 /opt/Natter/natter.py --map-only" value="' + escAttr(((hasMember ? member.natter_command : node.natter_command) || []).join(' ')) + '">'
+      + '<input data-node-form id="' + id + 'natterTimeout" type="number" min="1" placeholder="timeout" value="' + escAttr((hasMember ? member.natter_timeout_seconds : node.natter_timeout_seconds) || 90) + '">'
+      + '<label class="wgnh-check"><input data-node-form id="' + id + 'natterStop" type="checkbox" ' + ((hasMember ? member.natter_stop_wireguard : node.natter_stop_wireguard) ? 'checked' : '') + '><%:Stop WG%></label>'
+      + '<input data-node-form id="' + id + 'natterDelay" type="number" min="0" placeholder="restart delay" value="' + escAttr((hasMember ? member.natter_restart_delay_seconds : node.natter_restart_delay_seconds) || 0) + '">'
+      + '</div>'
+      + '<button class="cbi-button cbi-button-apply" data-approve="' + idx + '">' + (member.node_id ? '<%:Save%>' : '<%:Approve%>') + '</button>'
+      + '<button class="cbi-button cbi-button-remove" data-delete-node="' + idx + '"><%:Delete%></button>'
+      + '</div>';
+  }
+
+  async function createDomain() {
+    var id = document.getElementById('wgnh-domain-id').value.trim();
+    if (!id) {
+      toast('<%:Domain ID is required%>');
+      return;
+    }
+    try {
+      var json = await postForm(createDomainURL, {
+        domain_id: id,
+        name: document.getElementById('wgnh-domain-name').value.trim(),
+        description: document.getElementById('wgnh-domain-description').value.trim()
+      });
+      selectedDomainID = id;
+      var result = document.getElementById('wgnh-domain-result');
+      result.style.display = 'block';
+      result.innerHTML = '<%:Domain created. Join code:%> <span class="wgnh-code">' + esc(json.domain && json.domain.join_code || '') + '</span>';
+      toast('<%:Domain created%>');
+      loadSummary(false);
+    } catch (err) {
+      toast('<%:Create domain failed:%> ' + err.message);
+    }
+  }
+
+  async function approveNode(node, idx, button) {
+    var prefix = 'wgnh-approve-' + idx + '-';
+    var role = document.getElementById(prefix + 'role').value;
+    var nodeType = document.getElementById(prefix + 'nodeType').value;
+    var natterCommand = document.getElementById(prefix + 'natterCommand').value.trim();
+    button.disabled = true;
+    try {
+      await postForm(approveNodeURL, {
+        node_id: node.id,
+        name: document.getElementById(prefix + 'name').value.trim(),
+        domain_id: document.getElementById(prefix + 'domain').value,
+        role: role,
+        node_type: nodeType,
+        interface: document.getElementById(prefix + 'interface').value.trim() || 'wg0',
+        natter_command: role === 'server' ? natterCommand : '',
+        natter_timeout_seconds: role === 'server' ? numberValue(document.getElementById(prefix + 'natterTimeout').value) : 0,
+        natter_stop_wireguard: role === 'server' && document.getElementById(prefix + 'natterStop').checked ? '1' : '0',
+        natter_wireguard_control: nodeType === 'openwrt' ? 'ifup' : 'wg-quick',
+        natter_restart_delay_seconds: role === 'server' ? numberValue(document.getElementById(prefix + 'natterDelay').value) : 0
+      });
+      nodeFormDirty = false;
+      toast('<%:Node saved%>');
+      loadSummary(false);
+    } catch (err) {
+      toast('<%:Save node failed:%> ' + err.message);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  async function deleteNode(node, button) {
+    if (!confirm('<%:Delete this node and related bindings?%>')) return;
+    button.disabled = true;
+    try {
+      await postForm(deleteNodeURL, { node_id: node.id });
+      toast('<%:Node deleted%>');
+      loadSummary(false);
+    } catch (err) {
+      toast('<%:Delete node failed:%> ' + err.message);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  function renderWireGuard(items, nodeMap) {
     var body = document.getElementById('wgnh-wireguard');
     if (!items.length) {
       body.innerHTML = '<tr><td colspan="7" class="wgnh-empty"><%:No WireGuard inventory%></td></tr>';
@@ -350,18 +582,18 @@
         return '<span class="wgnh-code">' + esc(shortKey(peer)) + '</span>';
       }).join(' ');
       return '<tr>'
-        + '<td><span class="wgnh-code">' + esc(item.node_id) + '</span></td>'
+        + '<td>' + nodeRef(nodeMap[item.node_id] || { id: item.node_id }) + '</td>'
         + '<td><span class="wgnh-code">' + esc(item.name) + '</span></td>'
         + '<td><span class="wgnh-code">' + esc(shortKey(item.public_key || '')) + '</span></td>'
         + '<td>' + esc(item.listen_port || '-') + '</td>'
-        + '<td class="wgnh-wrap">' + (peers || '<span class="text-muted"><%:No peers%></span>') + '</td>'
+        + '<td class="wgnh-wrap">' + (peers || '<span class="wgnh-muted"><%:No peers%></span>') + '</td>'
         + '<td><span class="wgnh-badge">' + esc(item.config_type || 'runtime') + '</span> ' + esc(item.config_path || '') + '</td>'
-        + '<td>' + esc(item.updated_at || '-') + '</td>'
+        + '<td>' + esc(formatTime(item.updated_at)) + '</td>'
         + '</tr>';
     }).join('');
   }
 
-  function renderBindings(bindings) {
+  function renderBindings(bindings, nodeMap) {
     var body = document.getElementById('wgnh-bindings');
     if (!bindings.length) {
       body.innerHTML = '<tr><td colspan="6" class="wgnh-empty"><%:No bindings%></td></tr>';
@@ -370,11 +602,11 @@
     body.innerHTML = bindings.map(function(binding, index) {
       var endpoint = binding.endpoint_host
         ? '<span class="wgnh-code">' + esc(binding.endpoint_host + ':' + binding.endpoint_port) + '</span>'
-        : '<span class="text-muted"><%:Not published%></span>';
+        : '<span class="wgnh-muted"><%:Not published%></span>';
       return '<tr>'
-        + '<td><span class="wgnh-code">' + esc(binding.id) + '</span></td>'
-        + '<td><span class="wgnh-code">' + esc(binding.server_node_id) + '</span> / <span class="wgnh-code">' + esc(binding.server_interface) + '</span></td>'
-        + '<td><span class="wgnh-code">' + esc(binding.client_node_id) + '</span> / <span class="wgnh-code">' + esc(binding.client_interface) + '</span></td>'
+        + '<td><span class="wgnh-code">' + esc(binding.id) + '</span><div class="wgnh-mini">' + esc(binding.domain_id || '') + (binding.auto ? ' auto' : '') + '</div></td>'
+        + '<td>' + nodeRef(nodeMap[binding.server_node_id] || { id: binding.server_node_id }) + ' / <span class="wgnh-code">' + esc(binding.server_interface) + '</span></td>'
+        + '<td>' + nodeRef(nodeMap[binding.client_node_id] || { id: binding.client_node_id }) + ' / <span class="wgnh-code">' + esc(binding.client_interface) + '</span></td>'
         + '<td>' + endpoint + '</td>'
         + '<td><span class="wgnh-badge">' + esc(binding.config_type) + '</span> ' + esc(binding.reload_method) + '</td>'
         + '<td><button class="cbi-button cbi-button-apply" data-binding="' + index + '"><%:Run Natter%></button></td>'
@@ -382,13 +614,25 @@
     }).join('');
     body.querySelectorAll('button[data-binding]').forEach(function(button) {
       var binding = bindings[Number(button.dataset.binding)];
-      button.addEventListener('click', function() {
-        runNatter(binding.server_node_id, binding.server_interface, button);
-      });
+      button.addEventListener('click', function() { runNatter(binding.server_node_id, binding.server_interface, button); });
     });
   }
 
-  function renderEvents(events) {
+  async function runNatter(serverNodeID, serverInterface, button) {
+    button.disabled = true;
+    try {
+      var json = await postForm(runURL, { server_node_id: serverNodeID, server_interface: serverInterface });
+      var id = json.command && json.command.command_id ? json.command.command_id : 'queued';
+      toast('<%:natter.run queued:%> ' + id);
+      loadSummary(false);
+    } catch (err) {
+      toast('<%:Run Natter failed:%> ' + err.message);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  function renderEvents(events, nodeMap) {
     var body = document.getElementById('wgnh-events');
     if (!events.length) {
       body.innerHTML = '<tr><td colspan="7" class="wgnh-empty"><%:No events%></td></tr>';
@@ -396,15 +640,94 @@
     }
     body.innerHTML = events.map(function(event) {
       return '<tr>'
-        + '<td>' + esc(event.created_at) + '</td>'
-        + '<td><span class="wgnh-' + attr(event.severity) + '">' + esc(event.severity) + '</span></td>'
-        + '<td><span class="wgnh-code">' + esc(event.type) + '</span></td>'
-        + '<td>' + esc(event.node_id) + '</td>'
-        + '<td>' + esc(event.binding_id) + '</td>'
-        + '<td class="wgnh-wrap">' + esc(event.message) + '</td>'
-        + '<td class="wgnh-wrap"><span class="wgnh-code">' + esc(JSON.stringify(event.payload || {})) + '</span></td>'
+        + '<td>' + esc(formatTime(event.created_at)) + '</td>'
+        + '<td class="wgnh-wrap">' + renderActor(event, nodeMap) + '</td>'
+        + '<td class="wgnh-wrap">' + esc(formatTarget(event, nodeMap)) + '</td>'
+        + '<td><span class="wgnh-code">' + esc(event.action || event.type || '-') + '</span></td>'
+        + '<td class="wgnh-wrap">' + renderChange(event) + '</td>'
+        + '<td><span class="wgnh-' + attr(event.severity || event.result) + '">' + esc(event.result || event.severity || '-') + '</span></td>'
+        + '<td class="wgnh-wrap">' + esc(event.error || '') + '</td>'
         + '</tr>';
     }).join('');
+  }
+
+  function filterInterfaces(interfaces, members) {
+    if (!selectedDomainID) return interfaces;
+    var allowed = {};
+    members.forEach(function(member) { allowed[member.node_id + '/' + member.interface] = true; });
+    return interfaces.filter(function(item) { return allowed[item.node_id + '/' + item.name]; });
+  }
+
+  function filterBindings(bindings) {
+    if (!selectedDomainID) return bindings;
+    return bindings.filter(function(binding) {
+      return binding.domain_id === selectedDomainID || String(binding.id || '').indexOf(selectedDomainID + '-') === 0;
+    });
+  }
+
+  function filterEvents(events, members) {
+    events = events.filter(isVisibleAuditEvent);
+    if (!selectedDomainID) return events;
+    var nodeIDs = {};
+    members.forEach(function(member) { nodeIDs[member.node_id] = true; });
+    return events.filter(function(event) {
+      if (event.payload && event.payload.domain_id === selectedDomainID) return true;
+      if (event.after && event.after.domain_id === selectedDomainID) return true;
+      if (event.before && event.before.domain_id === selectedDomainID) return true;
+      if (event.binding_id && String(event.binding_id).indexOf(selectedDomainID + '-') === 0) return true;
+      return event.node_id && nodeIDs[event.node_id];
+    });
+  }
+
+  function isVisibleAuditEvent(event) {
+    var action = event.action || event.type || '';
+    if (action === 'agent.report') return false;
+    if ((action === 'command.queue' || action === 'command.complete') && event.severity !== 'error') return false;
+    return true;
+  }
+
+  function buildNodeMap(nodes) {
+    var out = {};
+    nodes.forEach(function(node) { out[node.id] = node; });
+    return out;
+  }
+
+  function buildMemberMap(members) {
+    var out = {};
+    members.forEach(function(member) { out[member.domain_id + '/' + member.node_id] = member; });
+    return out;
+  }
+
+  function updateNatterControls(select) {
+    var group = document.getElementById('wgnh-approve-' + select.dataset.role + '-natterGroup');
+    if (group) group.hidden = select.value !== 'server';
+  }
+
+  function markNodeFormDirty() {
+    nodeFormDirty = true;
+    if (!autoRefreshPaused) document.getElementById('wgnh-subtitle').textContent = '<%:Editing node configuration; auto refresh is temporarily skipped.%>';
+  }
+
+  function isEditingNodeConfig() {
+    var active = document.activeElement;
+    return !!active && !!active.closest && !!active.closest('#wgnh-nodes');
+  }
+
+  function toggleAutoRefresh() {
+    autoRefreshPaused = !autoRefreshPaused;
+    document.getElementById('wgnh-pause').textContent = autoRefreshPaused ? '<%:Resume auto refresh%>' : '<%:Pause auto refresh%>';
+    if (autoRefreshPaused) {
+      clearTimer();
+      toast('<%:Auto refresh paused%>');
+    } else {
+      nodeFormDirty = false;
+      loadSummary(false);
+    }
+  }
+
+  function scheduleRefresh() {
+    clearTimer();
+    if (!autoRefreshPaused) refreshTimer = setTimeout(function() { loadSummary(true); }, 15000);
   }
 
   function clearTimer() {
@@ -412,6 +735,87 @@
       clearTimeout(refreshTimer);
       refreshTimer = null;
     }
+  }
+
+  function renderActor(event, nodeMap) {
+    var actor = String(event.actor || '');
+    if (actor.indexOf('agent:') === 0) {
+      var id = actor.slice('agent:'.length);
+      return 'agent ' + nodeRef(nodeMap[id] || { id: id });
+    }
+    return esc(actor || '-');
+  }
+
+  function formatTarget(event, nodeMap) {
+    var target = String(event.target || '');
+    if (target.indexOf('node:') === 0) {
+      var id = target.slice('node:'.length);
+      var node = nodeMap[id] || { id: id };
+      return 'node ' + nodeLabel(node) + ' / ' + id;
+    }
+    if (target.indexOf('interface:') === 0) {
+      var value = target.slice('interface:'.length);
+      var parts = value.split('/');
+      var inode = nodeMap[parts[0]] || { id: parts[0] };
+      return 'interface ' + nodeLabel(inode) + '/' + (parts[1] || '-');
+    }
+    return target || event.binding_id || event.node_id || '-';
+  }
+
+  function renderChange(event) {
+    var before = compactObject(event.before);
+    var after = compactObject(event.after);
+    if (before && after) return '<div class="wgnh-mini">before</div><span class="wgnh-code">' + esc(before) + '</span><div class="wgnh-mini">after</div><span class="wgnh-code">' + esc(after) + '</span>';
+    if (after) return '<span class="wgnh-code">' + esc(after) + '</span>';
+    if (before) return '<span class="wgnh-code">' + esc(before) + '</span>';
+    return esc(event.message || '');
+  }
+
+  function compactObject(value) {
+    if (!value || typeof value !== 'object') return '';
+    var keys = ['domain_id', 'node_id', 'role', 'node_type', 'interface', 'server_node_id', 'server_interface', 'client_node_id', 'client_interface', 'public_ip', 'public_port', 'endpoint_host', 'endpoint_port', 'matched_bindings', 'binding_id', 'status', 'command_id', 'action', 'last_handshake', 'auto', 'enabled'];
+    var parts = [];
+    keys.forEach(function(key) {
+      if (Object.prototype.hasOwnProperty.call(value, key) && value[key] !== '' && value[key] !== null && value[key] !== undefined) parts.push(key + '=' + compactValue(value[key]));
+    });
+    return parts.length ? parts.join(' ') : JSON.stringify(value);
+  }
+
+  function compactValue(value) {
+    if (Array.isArray(value)) return '[' + value.map(compactValue).join(',') + ']';
+    if (value && typeof value === 'object') return JSON.stringify(value);
+    return String(value);
+  }
+
+  function nodeLabel(node) {
+    var name = String(node && node.name || '').trim();
+    if (name && name !== node.id) return name;
+    return shortKey(node && node.id || '');
+  }
+
+  function nodeRef(node) {
+    return '<span class="wgnh-node-ref"><strong>' + esc(nodeLabel(node)) + '</strong><span class="wgnh-mini">' + esc(node && node.id || '') + '</span></span>';
+  }
+
+  function inferNodeType(platform) {
+    platform = String(platform || '').toLowerCase();
+    return platform.indexOf('openwrt') >= 0 ? 'openwrt' : 'linux';
+  }
+
+  function selected(value, current) {
+    return String(value || '') === String(current || '') ? ' selected' : '';
+  }
+
+  function numberValue(value) {
+    var n = Number(value);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }
+
+  function formatTime(value) {
+    if (!value) return '-';
+    var date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return date.toLocaleString();
   }
 
   function toast(message) {
@@ -426,6 +830,10 @@
     return String(value || '').replace(/[&<>"']/g, function(ch) {
       return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch];
     });
+  }
+
+  function escAttr(value) {
+    return esc(value);
   }
 
   function attr(value) {

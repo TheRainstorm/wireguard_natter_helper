@@ -21,10 +21,6 @@ o.description = translate("Used when Admin token is empty.")
 o.default = "/etc/wgnh/admin-token"
 o.rmempty = true
 
-o = s:option(Flag, "enabled", translate("Enable local daemon service"))
-o.description = translate("Enable this only when this router itself should run wgnh daemon.")
-o.rmempty = false
-
 o = s:option(Value, "state", translate("State file"))
 o.default = "/etc/wgnh/state.json"
 o.rmempty = false
@@ -43,10 +39,6 @@ o.rmempty = false
 
 s = m:section(NamedSection, "agent", "agent", translate("Local agent service"))
 s.anonymous = false
-
-o = s:option(Flag, "enabled", translate("Enable local agent service"))
-o.description = translate("Enable this when this router should run wgnh agent, for example as a WireGuard client or NAT-side server node.")
-o.rmempty = false
 
 o = s:option(Value, "binary", translate("Binary path"))
 o.default = "/usr/bin/wgnh"

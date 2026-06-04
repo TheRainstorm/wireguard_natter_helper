@@ -1,5 +1,4 @@
 config daemon 'daemon'
-	option enabled '0'
 	option binary '/usr/bin/wgnh'
 	option state '/etc/wgnh/state.json'
 	option listen_addr '0.0.0.0:3333'
@@ -9,7 +8,6 @@ config daemon 'daemon'
 	option natter_cooldown '5m'
 
 config agent 'agent'
-	option enabled '0'
 	option binary '/usr/bin/wgnh'
 	option daemon_addr ''
 	option state_path '/etc/wgnh/node-state.json'

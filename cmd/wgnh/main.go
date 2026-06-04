@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -97,21 +98,51 @@ func daemonCmd(args []string) {
 		configType := fs.String("config-type", "", "openwrt_uci, wg_conf, or runtime")
 		reloadMethod := fs.String("reload-method", "", "none, ifup, wg-quick-restart, network-reload")
 		name := fs.String("name", "", "node display name")
+		natterManaged := fs.Bool("natter-managed", false, "update natter settings even when command is empty")
+		natterCommand := fs.String("natter-command", "", "server natter command, split by shell-like whitespace")
+		natterTimeout := fs.Int("natter-timeout", 0, "server natter command timeout in seconds")
+		natterStopWG := fs.Bool("natter-stop-wireguard", false, "stop WireGuard before running natter")
+		natterConfigured := fs.Bool("natter-configured", false, "mark natter as configured")
+		natterControl := fs.String("natter-wireguard-control", "", "WireGuard restart control for natter")
+		natterDelay := fs.Int("natter-restart-delay", 0, "delay after restarting WireGuard in seconds")
 		_ = fs.Parse(args[1:])
 		if *nodeID == "" {
 			log.Fatal("--node is required")
 		}
 		resp, err := rpc.Call(context.Background(), *addr, rpc.Request{
-			Kind:         "admin.approve_node",
-			AdminToken:   *adminToken,
-			NodeID:       *nodeID,
-			DomainID:     *domainID,
-			Role:         *role,
-			NodeType:     *nodeType,
-			Interface:    *iface,
-			ConfigType:   *configType,
-			ReloadMethod: *reloadMethod,
-			Name:         *name,
+			Kind:                      "admin.approve_node",
+			AdminToken:                *adminToken,
+			NodeID:                    *nodeID,
+			DomainID:                  *domainID,
+			Role:                      *role,
+			NodeType:                  *nodeType,
+			Interface:                 *iface,
+			ConfigType:                *configType,
+			ReloadMethod:              *reloadMethod,
+			Name:                      *name,
+			NatterManaged:             *natterManaged || *natterCommand != "" || *natterConfigured || *natterTimeout > 0 || *natterStopWG || *natterControl != "" || *natterDelay > 0,
+			NatterConfigured:          *natterConfigured || *natterCommand != "",
+			NatterCommand:             splitCommand(*natterCommand),
+			NatterTimeoutSeconds:      *natterTimeout,
+			NatterStopWireGuard:       *natterStopWG,
+			NatterWireGuardControl:    *natterControl,
+			NatterRestartDelaySeconds: *natterDelay,
+		}, 10*time.Second)
+		must(err)
+		fmt.Println(pretty(resp))
+	case "delete-node":
+		fs := flag.NewFlagSet("wgnh daemon delete-node", flag.ExitOnError)
+		addr := fs.String("addr", "127.0.0.1:3333", "daemon TCP address")
+		adminToken := fs.String("admin-token", "", "admin token")
+		nodeID := fs.String("node", "", "node id")
+		_ = fs.Parse(args[1:])
+		if *nodeID == "" {
+			log.Fatal("--node is required")
+		}
+		resp, err := rpc.Call(context.Background(), *addr, rpc.Request{
+			Kind:       "admin.delete_node",
+			AdminToken: *adminToken,
+			NodeID:     *nodeID,
 		}, 10*time.Second)
 		must(err)
 		fmt.Println(pretty(resp))
@@ -171,6 +202,8 @@ func daemonCmd(args []string) {
 		adminList(*flagSetAddrToken("wgnh daemon nodes", args[1:]), "admin.nodes")
 	case "domains":
 		adminList(*flagSetAddrToken("wgnh daemon domains", args[1:]), "admin.domains")
+	case "domain-members":
+		adminList(*flagSetAddrToken("wgnh daemon domain-members", args[1:]), "admin.domain_members")
 	case "bindings":
 		adminList(*flagSetAddrToken("wgnh daemon bindings", args[1:]), "admin.bindings")
 	case "wireguard":
@@ -277,7 +310,7 @@ func usage() {
 }
 
 func daemonUsage() {
-	fmt.Fprintln(os.Stderr, "usage: wgnh daemon <init|create-domain|create-node|approve-node|add-binding|serve|run-natter|domains|nodes|bindings|wireguard|events> ...")
+	fmt.Fprintln(os.Stderr, "usage: wgnh daemon <init|create-domain|create-node|approve-node|delete-node|add-binding|serve|run-natter|domains|domain-members|nodes|bindings|wireguard|events> ...")
 }
 
 func must(err error) {
@@ -289,4 +322,53 @@ func must(err error) {
 func pretty(v any) string {
 	raw, _ := json.MarshalIndent(v, "", "  ")
 	return string(raw)
+}
+
+func splitCommand(value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	var parts []string
+	var current strings.Builder
+	var quote rune
+	escaped := false
+	for _, ch := range value {
+		if escaped {
+			current.WriteRune(ch)
+			escaped = false
+			continue
+		}
+		if ch == '\\' {
+			escaped = true
+			continue
+		}
+		if quote != 0 {
+			if ch == quote {
+				quote = 0
+			} else {
+				current.WriteRune(ch)
+			}
+			continue
+		}
+		if ch == '\'' || ch == '"' {
+			quote = ch
+			continue
+		}
+		if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' {
+			if current.Len() > 0 {
+				parts = append(parts, current.String())
+				current.Reset()
+			}
+			continue
+		}
+		current.WriteRune(ch)
+	}
+	if escaped {
+		current.WriteRune('\\')
+	}
+	if current.Len() > 0 {
+		parts = append(parts, current.String())
+	}
+	return parts
 }

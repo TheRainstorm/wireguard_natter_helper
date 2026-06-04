@@ -13,9 +13,7 @@ load_admin_token() {
 
 start_service() {
 	config_load wgnh
-	local enabled binary state listen_addr admin_token_file natter_cooldown
-	config_get_bool enabled daemon enabled 0
-	[ "$enabled" = "1" ] || return 0
+	local binary state listen_addr admin_token_file natter_cooldown
 	config_get binary daemon binary /usr/bin/wgnh
 	config_get state daemon state /etc/wgnh/state.json
 	config_get listen_addr daemon listen_addr 0.0.0.0:3333

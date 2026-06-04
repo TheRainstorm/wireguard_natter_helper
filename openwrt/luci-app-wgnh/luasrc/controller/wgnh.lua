@@ -72,8 +72,9 @@ local function binding_has_endpoint(binding)
 	return binding and binding.endpoint_host and binding.endpoint_host ~= "" and tonumber(binding.endpoint_port or 0) > 0
 end
 
-local function build_stats(nodes, bindings, events, wireguard)
+local function build_stats(domains, nodes, bindings, events, wireguard)
 	local stats = {
+		domains = #domains,
 		nodes = #nodes,
 		online = 0,
 		pending = 0,
@@ -114,13 +115,26 @@ function index()
 	entry({"admin", "vpn", "wgnh", "settings"}, cbi("wgnh/settings"), _("Settings"), 20).leaf = true
 	entry({"admin", "vpn", "wgnh", "api", "summary"}, call("api_summary")).leaf = true
 	entry({"admin", "vpn", "wgnh", "api", "local"}, call("api_local")).leaf = true
+	entry({"admin", "vpn", "wgnh", "api", "create_domain"}, call("api_create_domain")).leaf = true
+	entry({"admin", "vpn", "wgnh", "api", "approve_node"}, call("api_approve_node")).leaf = true
+	entry({"admin", "vpn", "wgnh", "api", "delete_node"}, call("api_delete_node")).leaf = true
 	entry({"admin", "vpn", "wgnh", "api", "run_natter"}, call("api_run_natter")).leaf = true
 end
 
 function api_summary()
+	local domains_resp, domains_err = admin_call("domains")
+	if not domains_resp then
+		write_json({ ok = false, error = "load domains: " .. domains_err })
+		return
+	end
 	local nodes_resp, nodes_err = admin_call("nodes")
 	if not nodes_resp then
 		write_json({ ok = false, error = "load nodes: " .. nodes_err })
+		return
+	end
+	local members_resp, members_err = admin_call("domain-members")
+	if not members_resp then
+		write_json({ ok = false, error = "load domain members: " .. members_err })
 		return
 	end
 	local bindings_resp, bindings_err = admin_call("bindings")
@@ -140,7 +154,9 @@ function api_summary()
 	end
 
 	local _, addr = daemon_config()
+	local domains = domains_resp.domains or {}
 	local nodes = nodes_resp.nodes or {}
+	local members = members_resp.domain_members or {}
 	local bindings = bindings_resp.bindings or {}
 	local wireguard = wg_resp.wireguard_interfaces or {}
 	local events = events_resp.events or {}
@@ -150,11 +166,13 @@ function api_summary()
 		data = {
 			daemon_addr = addr,
 			generated_at = os.date("%Y-%m-%d %H:%M:%S"),
+			domains = domains,
 			nodes = nodes,
+			domain_members = members,
 			bindings = bindings,
 			wireguard_interfaces = wireguard,
 			events = events,
-			stats = build_stats(nodes, bindings, events, wireguard)
+			stats = build_stats(domains, nodes, bindings, events, wireguard)
 		}
 	})
 end
@@ -180,6 +198,79 @@ function api_local()
 			logs = logs or ""
 		}
 	})
+end
+
+function api_create_domain()
+	local domain_id = http.formvalue("domain_id")
+	if not domain_id or domain_id == "" then
+		write_json({ ok = false, error = "domain_id is required" })
+		return
+	end
+	local extra = string.format(
+		" --id=%s --name=%s --join-code=%s --description=%s",
+		shellquote(domain_id),
+		shellquote(http.formvalue("name") or ""),
+		shellquote(http.formvalue("join_code") or ""),
+		shellquote(http.formvalue("description") or "")
+	)
+	local resp, err = admin_call("create-domain", extra)
+	if not resp then
+		write_json({ ok = false, error = err })
+		return
+	end
+	write_json(resp)
+end
+
+function api_approve_node()
+	local node_id = http.formvalue("node_id")
+	if not node_id or node_id == "" then
+		write_json({ ok = false, error = "node_id is required" })
+		return
+	end
+	local node_type = http.formvalue("node_type") or "openwrt"
+	local natter_command = http.formvalue("natter_command") or ""
+	local natter_timeout = http.formvalue("natter_timeout_seconds") or "0"
+	local natter_delay = http.formvalue("natter_restart_delay_seconds") or "0"
+	local natter_stop = http.formvalue("natter_stop_wireguard") == "1"
+	local natter_control = http.formvalue("natter_wireguard_control") or ""
+	if natter_control == "" then
+		natter_control = node_type == "openwrt" and "ifup" or "wg-quick"
+	end
+	local extra = string.format(
+		" --node=%s --domain=%s --role=%s --node-type=%s --interface=%s --name=%s --natter-managed --natter-command=%s --natter-timeout=%s --natter-restart-delay=%s --natter-wireguard-control=%s%s%s",
+		shellquote(node_id),
+		shellquote(http.formvalue("domain_id") or ""),
+		shellquote(http.formvalue("role") or "client"),
+		shellquote(node_type),
+		shellquote(http.formvalue("interface") or "wg0"),
+		shellquote(http.formvalue("name") or ""),
+		shellquote(natter_command),
+		shellquote(natter_timeout),
+		shellquote(natter_delay),
+		shellquote(natter_control),
+		natter_stop and " --natter-stop-wireguard" or "",
+		natter_command ~= "" and " --natter-configured" or ""
+	)
+	local resp, err = admin_call("approve-node", extra)
+	if not resp then
+		write_json({ ok = false, error = err })
+		return
+	end
+	write_json(resp)
+end
+
+function api_delete_node()
+	local node_id = http.formvalue("node_id")
+	if not node_id or node_id == "" then
+		write_json({ ok = false, error = "node_id is required" })
+		return
+	end
+	local resp, err = admin_call("delete-node", " --node=" .. shellquote(node_id))
+	if not resp then
+		write_json({ ok = false, error = err })
+		return
+	end
+	write_json(resp)
 end
 
 function api_run_natter()
