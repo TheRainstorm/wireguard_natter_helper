@@ -55,12 +55,11 @@ func daemonCmd(args []string) {
 		state := fs.String("state", "wgnh-state.json", "state file")
 		id := fs.String("id", "", "node id")
 		name := fs.String("name", "", "node name")
-		role := fs.String("role", "", "server or client")
 		_ = fs.Parse(args[1:])
-		if *id == "" || *role == "" {
-			log.Fatal("--id and --role are required")
+		if *id == "" {
+			log.Fatal("--id is required")
 		}
-		token, err := daemon.CreateNode(*state, *id, *name, *role)
+		token, err := daemon.CreateNode(*state, *id, *name)
 		must(err)
 		fmt.Printf("node_id=%s\n", *id)
 		fmt.Printf("token=%s\n", token)

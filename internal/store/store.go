@@ -1,8 +1,12 @@
 package store
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -14,33 +18,42 @@ import (
 )
 
 type Store struct {
-	path string
-	mu   sync.Mutex
-	data Data
+	path        string
+	runtimePath string
+	eventPath   string
+	mu          sync.Mutex
+	data        Data
+	runtime     RuntimeData
 }
 
+const maxEventLogBytes = 1 << 20
+
 type Data struct {
-	Nodes          map[string]Node            `json:"nodes"`
-	Domains        map[string]Domain          `json:"domains"`
-	DomainMembers  map[string]DomainMember    `json:"domain_members"`
-	Bindings       map[string]Binding         `json:"bindings"`
-	WGInterfaces   map[string]WGInterface     `json:"wireguard_interfaces"`
-	EndpointLeases []EndpointLease            `json:"endpoint_leases"`
-	Commands       map[string][]QueuedCommand `json:"commands"`
-	Events         []Event                    `json:"events"`
+	Nodes         map[string]Node         `json:"nodes"`
+	Domains       map[string]Domain       `json:"domains"`
+	DomainMembers map[string]DomainMember `json:"domain_members"`
+	Bindings      map[string]Binding      `json:"bindings"`
+
+	// Deprecated state fields are read for migration, then omitted from future state saves.
+	WGInterfaces   map[string]WGInterface     `json:"wireguard_interfaces,omitempty"`
+	EndpointLeases []EndpointLease            `json:"endpoint_leases,omitempty"`
+	Commands       map[string][]QueuedCommand `json:"commands,omitempty"`
+	Events         []Event                    `json:"events,omitempty"`
 }
 
 type Node struct {
-	ID                        string   `json:"id"`
-	Name                      string   `json:"name"`
-	Role                      string   `json:"role"`
-	TokenHash                 string   `json:"token_hash"`
-	DomainID                  string   `json:"domain_id"`
-	Approved                  bool     `json:"approved"`
-	NodeType                  string   `json:"node_type"`
-	Interface                 string   `json:"interface"`
-	ConfigType                string   `json:"config_type"`
-	ReloadMethod              string   `json:"reload_method"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	TokenHash string `json:"token_hash,omitempty"`
+	Approved  bool   `json:"approved"`
+
+	// Deprecated node-level config fields are kept only to migrate older state files.
+	Role                      string   `json:"role,omitempty"`
+	DomainID                  string   `json:"domain_id,omitempty"`
+	NodeType                  string   `json:"node_type,omitempty"`
+	Interface                 string   `json:"interface,omitempty"`
+	ConfigType                string   `json:"config_type,omitempty"`
+	ReloadMethod              string   `json:"reload_method,omitempty"`
 	NatterManaged             bool     `json:"natter_managed,omitempty"`
 	NatterConfigured          bool     `json:"natter_configured,omitempty"`
 	NatterCommand             []string `json:"natter_command,omitempty"`
@@ -48,10 +61,11 @@ type Node struct {
 	NatterStopWireGuard       bool     `json:"natter_stop_wireguard,omitempty"`
 	NatterWireGuardControl    string   `json:"natter_wireguard_control,omitempty"`
 	NatterRestartDelaySeconds int      `json:"natter_restart_delay_seconds,omitempty"`
-	Status                    string   `json:"status"`
-	Platform                  string   `json:"platform"`
-	AgentVersion              string   `json:"agent_version"`
-	LastSeenAt                string   `json:"last_seen_at"`
+
+	Status       string `json:"status,omitempty"`
+	Platform     string `json:"platform,omitempty"`
+	AgentVersion string `json:"agent_version,omitempty"`
+	LastSeenAt   string `json:"last_seen_at,omitempty"`
 }
 
 type Domain struct {
@@ -118,6 +132,28 @@ type EndpointLease struct {
 	CreatedAt       string `json:"created_at"`
 }
 
+type RuntimeData struct {
+	NodeRuntime     map[string]NodeRuntime     `json:"node_runtime"`
+	PendingDomain   map[string]string          `json:"pending_domain,omitempty"`
+	WGInterfaces    map[string]WGInterface     `json:"wireguard_interfaces"`
+	EndpointLeases  []EndpointLease            `json:"endpoint_leases,omitempty"`
+	BindingEndpoint map[string]BindingEndpoint `json:"binding_endpoint,omitempty"`
+	Commands        map[string][]QueuedCommand `json:"commands"`
+}
+
+type NodeRuntime struct {
+	Status       string `json:"status"`
+	Platform     string `json:"platform,omitempty"`
+	AgentVersion string `json:"agent_version,omitempty"`
+	LastSeenAt   string `json:"last_seen_at,omitempty"`
+}
+
+type BindingEndpoint struct {
+	Host      string `json:"host"`
+	Port      int    `json:"port"`
+	UpdatedAt string `json:"updated_at"`
+}
+
 type QueuedCommand struct {
 	Command   protocol.Command `json:"command"`
 	Status    string           `json:"status"`
@@ -136,7 +172,13 @@ type Event struct {
 }
 
 func Open(path string) (*Store, error) {
-	s := &Store{path: path, data: newData()}
+	s := &Store{
+		path:        path,
+		runtimePath: path + ".runtime.json",
+		eventPath:   path + ".events.jsonl",
+		data:        newData(),
+		runtime:     newRuntimeData(),
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil && filepath.Dir(path) != "." {
 		return nil, err
 	}
@@ -152,7 +194,15 @@ func Open(path string) (*Store, error) {
 			return nil, err
 		}
 	}
-	s.ensureMaps()
+	if err := s.loadRuntime(); err != nil {
+		return nil, err
+	}
+	if err := s.ensureMaps(); err != nil {
+		return nil, err
+	}
+	if err := s.Save(); err != nil {
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -162,13 +212,20 @@ func newData() Data {
 		Domains:       map[string]Domain{},
 		DomainMembers: map[string]DomainMember{},
 		Bindings:      map[string]Binding{},
-		WGInterfaces:  map[string]WGInterface{},
-		Commands:      map[string][]QueuedCommand{},
-		Events:        []Event{},
 	}
 }
 
-func (s *Store) ensureMaps() {
+func newRuntimeData() RuntimeData {
+	return RuntimeData{
+		NodeRuntime:     map[string]NodeRuntime{},
+		PendingDomain:   map[string]string{},
+		WGInterfaces:    map[string]WGInterface{},
+		BindingEndpoint: map[string]BindingEndpoint{},
+		Commands:        map[string][]QueuedCommand{},
+	}
+}
+
+func (s *Store) ensureMaps() error {
 	if s.data.Nodes == nil {
 		s.data.Nodes = map[string]Node{}
 	}
@@ -181,6 +238,7 @@ func (s *Store) ensureMaps() {
 	if s.data.Bindings == nil {
 		s.data.Bindings = map[string]Binding{}
 	}
+	s.ensureRuntimeMaps()
 	if s.data.WGInterfaces == nil {
 		s.data.WGInterfaces = map[string]WGInterface{}
 	}
@@ -215,16 +273,94 @@ func (s *Store) ensureMaps() {
 		defaultMemberRuntimeFields(&member)
 		s.data.DomainMembers[key] = member
 	}
+	for id, node := range s.data.Nodes {
+		if node.Status != "" || node.LastSeenAt != "" || node.Platform != "" || node.AgentVersion != "" {
+			s.runtime.NodeRuntime[id] = NodeRuntime{
+				Status:       firstNonEmpty(node.Status, "offline"),
+				Platform:     node.Platform,
+				AgentVersion: node.AgentVersion,
+				LastSeenAt:   node.LastSeenAt,
+			}
+		}
+		clearNodeTransientFields(&node)
+		s.data.Nodes[id] = node
+	}
+	for key, item := range s.data.WGInterfaces {
+		s.runtime.WGInterfaces[key] = item
+	}
+	if len(s.data.Commands) > 0 {
+		for nodeID, queue := range s.data.Commands {
+			s.runtime.Commands[nodeID] = append([]QueuedCommand(nil), queue...)
+		}
+	}
+	if len(s.data.EndpointLeases) > 0 {
+		s.runtime.EndpointLeases = append([]EndpointLease(nil), s.data.EndpointLeases...)
+	}
+	now := protocol.NowISO()
+	for id, binding := range s.data.Bindings {
+		if binding.EndpointHost != "" && binding.EndpointPort > 0 {
+			s.runtime.BindingEndpoint[id] = BindingEndpoint{Host: binding.EndpointHost, Port: binding.EndpointPort, UpdatedAt: now}
+			binding.EndpointHost = ""
+			binding.EndpointPort = 0
+			s.data.Bindings[id] = binding
+		}
+	}
+	if len(s.data.Events) > 0 {
+		for _, event := range s.data.Events {
+			if err := s.appendEventFileLocked(event); err != nil {
+				return err
+			}
+		}
+	}
+	s.clearDeprecatedStateFields()
+	return nil
+}
+
+func (s *Store) ensureRuntimeMaps() {
+	if s.runtime.NodeRuntime == nil {
+		s.runtime.NodeRuntime = map[string]NodeRuntime{}
+	}
+	if s.runtime.PendingDomain == nil {
+		s.runtime.PendingDomain = map[string]string{}
+	}
+	if s.runtime.WGInterfaces == nil {
+		s.runtime.WGInterfaces = map[string]WGInterface{}
+	}
+	if s.runtime.BindingEndpoint == nil {
+		s.runtime.BindingEndpoint = map[string]BindingEndpoint{}
+	}
+	if s.runtime.Commands == nil {
+		s.runtime.Commands = map[string][]QueuedCommand{}
+	}
 }
 
 func (s *Store) Save() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.saveLocked()
+	if err := s.saveLocked(); err != nil {
+		return err
+	}
+	return s.saveRuntimeLocked()
 }
 
 func (s *Store) saveLocked() error {
-	raw, err := json.MarshalIndent(s.data, "", "  ")
+	data := s.data
+	data.WGInterfaces = nil
+	data.EndpointLeases = nil
+	data.Commands = nil
+	data.Events = nil
+	data.Nodes = make(map[string]Node, len(s.data.Nodes))
+	for id, node := range s.data.Nodes {
+		clearNodeTransientFields(&node)
+		data.Nodes[id] = node
+	}
+	data.Bindings = make(map[string]Binding, len(s.data.Bindings))
+	for id, binding := range s.data.Bindings {
+		binding.EndpointHost = ""
+		binding.EndpointPort = 0
+		data.Bindings[id] = binding
+	}
+	raw, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -235,12 +371,53 @@ func (s *Store) saveLocked() error {
 	return os.Rename(tmp, s.path)
 }
 
-func (s *Store) CreateNode(id, name, role, token string) error {
+func (s *Store) loadRuntime() error {
+	raw, err := os.ReadFile(s.runtimePath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil
+	}
+	if err := json.Unmarshal(raw, &s.runtime); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) saveRuntimeLocked() error {
+	s.ensureRuntimeMaps()
+	raw, err := json.MarshalIndent(s.runtime, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := s.runtimePath + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, s.runtimePath)
+}
+
+func (s *Store) clearDeprecatedStateFields() {
+	s.data.WGInterfaces = nil
+	s.data.EndpointLeases = nil
+	s.data.Commands = nil
+	s.data.Events = nil
+}
+
+func (s *Store) CreateNode(id, name, token string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.data.Nodes[id] = Node{ID: id, Name: name, Role: role, TokenHash: auth.HashToken(token), Approved: true, Status: "offline"}
-	s.addEventLocked("node.upserted", "info", id, "", "Node saved", nil)
-	return s.saveLocked()
+	s.data.Nodes[id] = Node{ID: id, Name: name, TokenHash: auth.HashToken(token), Approved: true}
+	s.runtime.NodeRuntime[id] = NodeRuntime{Status: "offline"}
+	s.addEventLocked("node.upserted", "info", id, "", fmt.Sprintf("Node %s saved", label(name, id)), map[string]any{"name": name})
+	if err := s.saveLocked(); err != nil {
+		return err
+	}
+	return s.saveRuntimeLocked()
 }
 
 func (s *Store) AuthenticateNode(id, token string) (Node, bool) {
@@ -265,16 +442,19 @@ func (s *Store) MarkSeen(id string, meta map[string]any) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	node := s.data.Nodes[id]
+	runtime := s.runtime.NodeRuntime[id]
 	if node.Approved {
-		node.Status = "online"
+		runtime.Status = "online"
 	} else {
-		node.Status = "pending"
+		runtime.Status = "pending"
 	}
-	node.LastSeenAt = protocol.NowISO()
-	node.Platform, _ = meta["platform"].(string)
-	node.AgentVersion, _ = meta["agent_version"].(string)
-	s.data.Nodes[id] = node
-	return s.saveLocked()
+	runtime.LastSeenAt = protocol.NowISO()
+	if meta != nil {
+		runtime.Platform, _ = meta["platform"].(string)
+		runtime.AgentVersion, _ = meta["agent_version"].(string)
+	}
+	s.runtime.NodeRuntime[id] = runtime
+	return s.saveRuntimeLocked()
 }
 
 func (s *Store) CreateDomain(id, name, joinCode, description string) error {
@@ -290,7 +470,7 @@ func (s *Store) CreateDomain(id, name, joinCode, description string) error {
 		return errors.New("domain already exists")
 	}
 	s.data.Domains[id] = Domain{ID: id, Name: name, JoinCode: joinCode, Description: description, CreatedAt: protocol.NowISO()}
-	s.addEventLocked("domain.created", "info", "", "", "Domain created", map[string]any{"domain_id": id})
+	s.addEventLocked("domain.created", "info", "", "", fmt.Sprintf("Domain %s created", id), map[string]any{"domain_id": id, "name": name})
 	return s.saveLocked()
 }
 
@@ -331,36 +511,39 @@ func (s *Store) UpsertJoinedNode(domainID, nodeID, name, token string, meta map[
 		if !auth.VerifyToken(token, existing.TokenHash) {
 			return Node{}, false, errors.New("node id already exists with a different token")
 		}
-		if existing.DomainID == "" {
-			existing.DomainID = domainID
-		}
-		existing.LastSeenAt = protocol.NowISO()
+		runtime := s.runtime.NodeRuntime[nodeID]
+		runtime.LastSeenAt = protocol.NowISO()
+		runtime.Status = "pending"
+		s.runtime.PendingDomain[nodeID] = domainID
 		if meta != nil {
-			existing.Platform, _ = meta["platform"].(string)
-			existing.AgentVersion, _ = meta["agent_version"].(string)
+			runtime.Platform, _ = meta["platform"].(string)
+			runtime.AgentVersion, _ = meta["agent_version"].(string)
 		}
-		s.data.Nodes[nodeID] = existing
-		return existing, false, s.saveLocked()
+		s.runtime.NodeRuntime[nodeID] = runtime
+		return s.nodeWithRuntime(existing), false, s.saveRuntimeLocked()
 	}
 	node := Node{
-		ID:         nodeID,
-		Name:       name,
-		TokenHash:  auth.HashToken(token),
-		DomainID:   domainID,
-		Approved:   false,
-		Status:     "pending",
-		LastSeenAt: protocol.NowISO(),
+		ID:        nodeID,
+		Name:      name,
+		TokenHash: auth.HashToken(token),
+		Approved:  false,
 	}
 	if node.Name == "" {
 		node.Name = node.ID
 	}
+	runtime := NodeRuntime{Status: "pending", LastSeenAt: protocol.NowISO()}
 	if meta != nil {
-		node.Platform, _ = meta["platform"].(string)
-		node.AgentVersion, _ = meta["agent_version"].(string)
+		runtime.Platform, _ = meta["platform"].(string)
+		runtime.AgentVersion, _ = meta["agent_version"].(string)
 	}
 	s.data.Nodes[node.ID] = node
-	s.addEventLocked("node.joined", "info", node.ID, "", "Node joined and is pending approval", map[string]any{"domain_id": domainID})
-	return node, true, s.saveLocked()
+	s.runtime.NodeRuntime[node.ID] = runtime
+	s.runtime.PendingDomain[node.ID] = domainID
+	s.addEventLocked("node.joined", "info", node.ID, "", fmt.Sprintf("Node %s joined domain %s and is pending approval", label(node.Name, node.ID), domainID), map[string]any{"domain_id": domainID, "node_name": node.Name})
+	if err := s.saveLocked(); err != nil {
+		return Node{}, false, err
+	}
+	return s.nodeWithRuntime(node), true, s.saveRuntimeLocked()
 }
 
 func (s *Store) UpsertPendingNode(nodeID, name, token string, meta map[string]any) (Node, bool, error) {
@@ -373,35 +556,44 @@ func (s *Store) UpsertPendingNode(nodeID, name, token string, meta map[string]an
 		if !auth.VerifyToken(token, existing.TokenHash) {
 			return Node{}, false, errors.New("node id already exists with a different token")
 		}
-		existing.LastSeenAt = protocol.NowISO()
 		if existing.Name == "" && name != "" {
 			existing.Name = name
 		}
+		runtime := s.runtime.NodeRuntime[nodeID]
+		runtime.LastSeenAt = protocol.NowISO()
+		runtime.Status = "pending"
 		if meta != nil {
-			existing.Platform, _ = meta["platform"].(string)
-			existing.AgentVersion, _ = meta["agent_version"].(string)
+			runtime.Platform, _ = meta["platform"].(string)
+			runtime.AgentVersion, _ = meta["agent_version"].(string)
 		}
 		s.data.Nodes[nodeID] = existing
-		return existing, false, s.saveLocked()
+		s.runtime.NodeRuntime[nodeID] = runtime
+		if err := s.saveLocked(); err != nil {
+			return Node{}, false, err
+		}
+		return s.nodeWithRuntime(existing), false, s.saveRuntimeLocked()
 	}
 	node := Node{
-		ID:         nodeID,
-		Name:       name,
-		TokenHash:  auth.HashToken(token),
-		Approved:   false,
-		Status:     "pending",
-		LastSeenAt: protocol.NowISO(),
+		ID:        nodeID,
+		Name:      name,
+		TokenHash: auth.HashToken(token),
+		Approved:  false,
 	}
 	if node.Name == "" {
 		node.Name = node.ID
 	}
+	runtime := NodeRuntime{Status: "pending", LastSeenAt: protocol.NowISO()}
 	if meta != nil {
-		node.Platform, _ = meta["platform"].(string)
-		node.AgentVersion, _ = meta["agent_version"].(string)
+		runtime.Platform, _ = meta["platform"].(string)
+		runtime.AgentVersion, _ = meta["agent_version"].(string)
 	}
 	s.data.Nodes[node.ID] = node
-	s.addEventLocked("node.registered", "info", node.ID, "", "Node registered and is pending approval", nil)
-	return node, true, s.saveLocked()
+	s.runtime.NodeRuntime[node.ID] = runtime
+	s.addEventLocked("node.registered", "info", node.ID, "", fmt.Sprintf("Node %s registered and is pending approval", label(node.Name, node.ID)), map[string]any{"node_name": node.Name})
+	if err := s.saveLocked(); err != nil {
+		return Node{}, false, err
+	}
+	return s.nodeWithRuntime(node), true, s.saveRuntimeLocked()
 }
 
 type NodeApproval struct {
@@ -428,7 +620,7 @@ func (s *Store) ApproveNode(nodeID string, approval NodeApproval) (Node, error) 
 	if !ok {
 		return Node{}, errors.New("node not found")
 	}
-	domainID := firstNonEmpty(approval.DomainID, node.DomainID)
+	domainID := firstNonEmpty(approval.DomainID, s.runtime.PendingDomain[nodeID], singleMemberDomainID(s.data.DomainMembers, nodeID))
 	if domainID == "" {
 		return Node{}, errors.New("domain is required")
 	}
@@ -441,11 +633,11 @@ func (s *Store) ApproveNode(nodeID string, approval NodeApproval) (Node, error) 
 	member := s.data.DomainMembers[domainMemberKey(domainID, nodeID)]
 	member.DomainID = domainID
 	member.NodeID = nodeID
-	member.Role = firstNonEmpty(approval.Role, member.Role, node.Role)
-	member.NodeType = firstNonEmpty(approval.NodeType, member.NodeType, node.NodeType)
-	member.Interface = firstNonEmpty(approval.Interface, member.Interface, node.Interface)
-	member.ConfigType = firstNonEmpty(approval.ConfigType, member.ConfigType, node.ConfigType)
-	member.ReloadMethod = firstNonEmpty(approval.ReloadMethod, member.ReloadMethod, node.ReloadMethod)
+	member.Role = firstNonEmpty(approval.Role, member.Role)
+	member.NodeType = firstNonEmpty(approval.NodeType, member.NodeType)
+	member.Interface = firstNonEmpty(approval.Interface, member.Interface)
+	member.ConfigType = firstNonEmpty(approval.ConfigType, member.ConfigType)
+	member.ReloadMethod = firstNonEmpty(approval.ReloadMethod, member.ReloadMethod)
 	if approval.NatterManaged {
 		member.NatterManaged = true
 		if approval.NatterConfigured {
@@ -474,21 +666,34 @@ func (s *Store) ApproveNode(nodeID string, approval NodeApproval) (Node, error) 
 	member.UpdatedAt = protocol.NowISO()
 	s.data.DomainMembers[domainMemberKey(domainID, nodeID)] = member
 
-	applyMemberToLegacyNodeFields(&node, member)
 	wasApproved := node.Approved
 	node.Approved = true
-	if node.Status == "pending" {
-		node.Status = "offline"
+	delete(s.runtime.PendingDomain, nodeID)
+	runtime := s.runtime.NodeRuntime[nodeID]
+	if runtime.Status == "pending" || runtime.Status == "" {
+		runtime.Status = "offline"
 	}
+	s.runtime.NodeRuntime[nodeID] = runtime
+	clearNodeTransientFields(&node)
 	s.data.Nodes[nodeID] = node
 	eventType := "node.approved"
-	message := "Node approved"
+	message := fmt.Sprintf("Node %s approved in domain %s as %s on %s", label(node.Name, node.ID), member.DomainID, member.Role, member.Interface)
 	if wasApproved {
 		eventType = "node.updated"
-		message = "Node configuration updated"
+		message = fmt.Sprintf("Node %s updated in domain %s: role=%s interface=%s node_type=%s", label(node.Name, node.ID), member.DomainID, member.Role, member.Interface, member.NodeType)
 	}
-	s.addEventLocked(eventType, "info", node.ID, "", message, map[string]any{"domain_id": member.DomainID, "role": member.Role, "interface": member.Interface})
-	return node, s.saveLocked()
+	s.addEventLocked(eventType, "info", node.ID, "", message, map[string]any{
+		"domain_id":     member.DomainID,
+		"role":          member.Role,
+		"interface":     member.Interface,
+		"node_type":     member.NodeType,
+		"config_type":   member.ConfigType,
+		"reload_method": member.ReloadMethod,
+	})
+	if err := s.saveLocked(); err != nil {
+		return Node{}, err
+	}
+	return s.nodeWithRuntime(node), s.saveRuntimeLocked()
 }
 
 func (s *Store) AddBinding(b Binding) error {
@@ -496,9 +701,19 @@ func (s *Store) AddBinding(b Binding) error {
 	defer s.mu.Unlock()
 	defaultBindingFields(&b)
 	b.Enabled = true
+	endpointHost := b.EndpointHost
+	endpointPort := b.EndpointPort
+	b.EndpointHost = ""
+	b.EndpointPort = 0
 	s.data.Bindings[b.ID] = b
-	s.addEventLocked("binding.upserted", "info", "", b.ID, "Binding saved", nil)
-	return s.saveLocked()
+	if endpointHost != "" && endpointPort > 0 {
+		s.runtime.BindingEndpoint[b.ID] = BindingEndpoint{Host: endpointHost, Port: endpointPort, UpdatedAt: protocol.NowISO()}
+	}
+	s.addEventLocked("binding.upserted", "info", "", b.ID, fmt.Sprintf("Binding %s saved: %s/%s -> %s/%s", b.ID, b.ServerNodeID, b.ServerInterface, b.ClientNodeID, b.ClientInterface), map[string]any{"domain_id": b.DomainID})
+	if err := s.saveLocked(); err != nil {
+		return err
+	}
+	return s.saveRuntimeLocked()
 }
 
 func (s *Store) DeleteNode(nodeID string) error {
@@ -512,31 +727,36 @@ func (s *Store) DeleteNode(nodeID string) error {
 		return errors.New("node not found")
 	}
 	delete(s.data.Nodes, nodeID)
-	delete(s.data.Commands, nodeID)
+	delete(s.runtime.NodeRuntime, nodeID)
+	delete(s.runtime.Commands, nodeID)
 	for key, member := range s.data.DomainMembers {
 		if member.NodeID == nodeID {
 			delete(s.data.DomainMembers, key)
 		}
 	}
-	for key, item := range s.data.WGInterfaces {
+	for key, item := range s.runtime.WGInterfaces {
 		if item.NodeID == nodeID {
-			delete(s.data.WGInterfaces, key)
+			delete(s.runtime.WGInterfaces, key)
 		}
 	}
 	for id, binding := range s.data.Bindings {
 		if binding.ServerNodeID == nodeID || binding.ClientNodeID == nodeID {
 			delete(s.data.Bindings, id)
+			delete(s.runtime.BindingEndpoint, id)
 		}
 	}
-	leases := s.data.EndpointLeases[:0]
-	for _, lease := range s.data.EndpointLeases {
+	leases := s.runtime.EndpointLeases[:0]
+	for _, lease := range s.runtime.EndpointLeases {
 		if lease.ServerNodeID != nodeID {
 			leases = append(leases, lease)
 		}
 	}
-	s.data.EndpointLeases = leases
-	s.addEventLocked("node.deleted", "info", nodeID, "", "Node deleted", map[string]any{"name": node.Name})
-	return s.saveLocked()
+	s.runtime.EndpointLeases = leases
+	s.addEventLocked("node.deleted", "info", nodeID, "", fmt.Sprintf("Node %s deleted with related memberships, commands, inventory, and bindings", label(node.Name, node.ID)), map[string]any{"name": node.Name})
+	if err := s.saveLocked(); err != nil {
+		return err
+	}
+	return s.saveRuntimeLocked()
 }
 
 func (s *Store) UpdateWGInterfaces(nodeID string, interfaces []WGInterface) error {
@@ -546,9 +766,9 @@ func (s *Store) UpdateWGInterfaces(nodeID string, interfaces []WGInterface) erro
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := protocol.NowISO()
-	for key, item := range s.data.WGInterfaces {
+	for key, item := range s.runtime.WGInterfaces {
 		if item.NodeID == nodeID {
-			delete(s.data.WGInterfaces, key)
+			delete(s.runtime.WGInterfaces, key)
 		}
 	}
 	for _, item := range interfaces {
@@ -557,16 +777,16 @@ func (s *Store) UpdateWGInterfaces(nodeID string, interfaces []WGInterface) erro
 		}
 		item.NodeID = nodeID
 		item.UpdatedAt = now
-		s.data.WGInterfaces[wgInterfaceKey(nodeID, item.Name)] = item
+		s.runtime.WGInterfaces[wgInterfaceKey(nodeID, item.Name)] = item
 	}
-	return s.saveLocked()
+	return s.saveRuntimeLocked()
 }
 
 func (s *Store) WGInterfaces() []WGInterface {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([]WGInterface, 0, len(s.data.WGInterfaces))
-	for _, item := range s.data.WGInterfaces {
+	out := make([]WGInterface, 0, len(s.runtime.WGInterfaces))
+	for _, item := range s.runtime.WGInterfaces {
 		out = append(out, item)
 	}
 	return out
@@ -643,8 +863,13 @@ func (s *Store) ReconcileAutoBindings() ([]Binding, error) {
 						}
 						defaultBindingFields(&b)
 						s.data.Bindings[b.ID] = b
-						s.addEventLocked("binding.auto_created", "info", "", b.ID, "Binding auto-created from WireGuard inventory", map[string]any{
-							"domain_id": domainID,
+						s.addEventLocked("binding.auto_created", "info", "", b.ID, fmt.Sprintf("Auto-created binding %s in domain %s: %s/%s -> %s/%s because client peer contains server public key %s", b.ID, domainID, b.ServerNodeID, b.ServerInterface, b.ClientNodeID, b.ClientInterface, shortKey(b.PeerPublicKey)), map[string]any{
+							"domain_id":        domainID,
+							"server_node_id":   b.ServerNodeID,
+							"server_interface": b.ServerInterface,
+							"client_node_id":   b.ClientNodeID,
+							"client_interface": b.ClientInterface,
+							"peer_public_key":  b.PeerPublicKey,
 						})
 						created = append(created, b)
 					}
@@ -661,21 +886,21 @@ func (s *Store) ReconcileAutoBindings() ([]Binding, error) {
 func (s *Store) QueueCommand(nodeID string, cmd protocol.Command) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.data.Commands[nodeID] = append(s.data.Commands[nodeID], QueuedCommand{Command: cmd, Status: "pending", CreatedAt: protocol.NowISO()})
-	s.addEventLocked("command.queued", "info", nodeID, "", "Command queued", map[string]any{"action": cmd.Action})
-	return s.saveLocked()
+	s.runtime.Commands[nodeID] = append(s.runtime.Commands[nodeID], QueuedCommand{Command: cmd, Status: "pending", CreatedAt: protocol.NowISO()})
+	s.addEventLocked("command.queued", "info", nodeID, "", fmt.Sprintf("Queued command %s action=%s for node %s", cmd.CommandID, cmd.Action, nodeID), map[string]any{"action": cmd.Action, "command_id": cmd.CommandID, "payload": cmd.Payload})
+	return s.saveRuntimeLocked()
 }
 
 func (s *Store) NextCommand(nodeID string) (*protocol.Command, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	queue := s.data.Commands[nodeID]
+	queue := s.runtime.Commands[nodeID]
 	for i := range queue {
 		if queue[i].Status == "pending" {
 			queue[i].Status = "delivered"
-			s.data.Commands[nodeID] = queue
+			s.runtime.Commands[nodeID] = queue
 			cmd := queue[i].Command
-			return &cmd, s.saveLocked()
+			return &cmd, s.saveRuntimeLocked()
 		}
 	}
 	return nil, nil
@@ -684,7 +909,7 @@ func (s *Store) NextCommand(nodeID string) (*protocol.Command, error) {
 func (s *Store) CompleteCommand(nodeID, commandID string, result map[string]any) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	queue := s.data.Commands[nodeID]
+	queue := s.runtime.Commands[nodeID]
 	for i := range queue {
 		if queue[i].Command.CommandID == commandID {
 			queue[i].Status = "completed"
@@ -692,9 +917,13 @@ func (s *Store) CompleteCommand(nodeID, commandID string, result map[string]any)
 			break
 		}
 	}
-	s.data.Commands[nodeID] = queue
-	s.addEventLocked("command.completed", "info", nodeID, "", "Command completed", result)
-	return s.saveLocked()
+	s.runtime.Commands[nodeID] = queue
+	status := "completed"
+	if ok, exists := result["ok"]; exists && ok == false {
+		status = "failed"
+	}
+	s.addEventLocked("command.completed", "info", nodeID, "", fmt.Sprintf("Command %s %s on node %s: %s", commandID, status, nodeID, summarizeResult(result)), result)
+	return s.saveRuntimeLocked()
 }
 
 func (s *Store) SaveEndpointLease(nodeID string, lease EndpointLease) ([]Binding, error) {
@@ -702,18 +931,22 @@ func (s *Store) SaveEndpointLease(nodeID string, lease EndpointLease) ([]Binding
 	defer s.mu.Unlock()
 	lease.ServerNodeID = nodeID
 	lease.CreatedAt = protocol.NowISO()
-	s.data.EndpointLeases = append(s.data.EndpointLeases, lease)
+	s.runtime.EndpointLeases = append(s.runtime.EndpointLeases, lease)
 	var bindings []Binding
 	for id, b := range s.data.Bindings {
 		if b.Enabled && b.ServerNodeID == nodeID && b.ServerInterface == lease.ServerInterface {
-			b.EndpointHost = lease.PublicIP
-			b.EndpointPort = lease.PublicPort
-			s.data.Bindings[id] = b
-			bindings = append(bindings, b)
+			s.runtime.BindingEndpoint[id] = BindingEndpoint{Host: lease.PublicIP, Port: lease.PublicPort, UpdatedAt: lease.CreatedAt}
+			bindings = append(bindings, s.bindingWithEndpointLocked(id, b))
 		}
 	}
-	s.addEventLocked("endpoint.updated", "info", nodeID, "", "Endpoint lease saved", nil)
-	return bindings, s.saveLocked()
+	s.addEventLocked("endpoint.updated", "info", nodeID, "", fmt.Sprintf("Node %s updated %s endpoint to %s:%d and matched %d binding(s)", nodeID, lease.ServerInterface, lease.PublicIP, lease.PublicPort, len(bindings)), map[string]any{
+		"server_node_id":   nodeID,
+		"server_interface": lease.ServerInterface,
+		"public_ip":        lease.PublicIP,
+		"public_port":      lease.PublicPort,
+		"matched_bindings": len(bindings),
+	})
+	return bindings, s.saveRuntimeLocked()
 }
 
 func (s *Store) Nodes() []Node {
@@ -721,7 +954,9 @@ func (s *Store) Nodes() []Node {
 	defer s.mu.Unlock()
 	out := make([]Node, 0, len(s.data.Nodes))
 	for _, n := range s.data.Nodes {
+		n = s.nodeWithRuntime(n)
 		n.TokenHash = ""
+		clearNodeConfigFields(&n)
 		n.Status = displayStatus(n)
 		out = append(out, n)
 	}
@@ -746,8 +981,8 @@ func (s *Store) Bindings() []Binding {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]Binding, 0, len(s.data.Bindings))
-	for _, b := range s.data.Bindings {
-		out = append(out, b)
+	for id, b := range s.data.Bindings {
+		out = append(out, s.bindingWithEndpointLocked(id, b))
 	}
 	return out
 }
@@ -755,26 +990,19 @@ func (s *Store) Bindings() []Binding {
 func (s *Store) Events(limit int) []Event {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if limit <= 0 || limit > len(s.data.Events) {
-		limit = len(s.data.Events)
-	}
-	out := make([]Event, 0, limit)
-	for i := len(s.data.Events) - 1; i >= 0 && len(out) < limit; i-- {
-		out = append(out, s.data.Events[i])
-	}
-	return out
+	return s.readEventsLocked(limit)
 }
 
 func (s *Store) AddEvent(eventType, severity, nodeID, bindingID, message string, payload map[string]any) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.addEventLocked(eventType, severity, nodeID, bindingID, message, payload)
-	return s.saveLocked()
+	return nil
 }
 
 func (s *Store) interfacesForNodeLocked(nodeID, preferredName string) []WGInterface {
 	var out []WGInterface
-	for _, item := range s.data.WGInterfaces {
+	for _, item := range s.runtime.WGInterfaces {
 		if item.NodeID != nodeID {
 			continue
 		}
@@ -828,42 +1056,6 @@ func defaultMemberRuntimeFields(member *DomainMember) {
 	}
 }
 
-func defaultNodeRuntimeFields(node *Node) {
-	switch node.NodeType {
-	case "openwrt":
-		if node.ConfigType == "" {
-			node.ConfigType = "openwrt_uci"
-		}
-		if node.ReloadMethod == "" {
-			node.ReloadMethod = "ifup"
-		}
-	case "linux":
-		if node.ConfigType == "" {
-			node.ConfigType = "wg_conf"
-		}
-		if node.ReloadMethod == "" {
-			node.ReloadMethod = "wg-quick-restart"
-		}
-	}
-}
-
-func applyMemberToLegacyNodeFields(node *Node, member DomainMember) {
-	node.DomainID = member.DomainID
-	node.Role = member.Role
-	node.NodeType = member.NodeType
-	node.Interface = member.Interface
-	node.ConfigType = member.ConfigType
-	node.ReloadMethod = member.ReloadMethod
-	node.NatterManaged = member.NatterManaged
-	node.NatterConfigured = member.NatterConfigured
-	node.NatterCommand = append([]string(nil), member.NatterCommand...)
-	node.NatterTimeoutSeconds = member.NatterTimeoutSeconds
-	node.NatterStopWireGuard = member.NatterStopWireGuard
-	node.NatterWireGuardControl = member.NatterWireGuardControl
-	node.NatterRestartDelaySeconds = member.NatterRestartDelaySeconds
-	defaultNodeRuntimeFields(node)
-}
-
 func autoBindingID(domainID, serverNodeID, serverInterface, clientNodeID, clientInterface string) string {
 	return cleanID(domainID + "-" + serverNodeID + "-" + serverInterface + "-to-" + clientNodeID + "-" + clientInterface)
 }
@@ -906,9 +1098,169 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+func singleMemberDomainID(members map[string]DomainMember, nodeID string) string {
+	var domainID string
+	for _, member := range members {
+		if member.NodeID != nodeID {
+			continue
+		}
+		if domainID != "" && domainID != member.DomainID {
+			return ""
+		}
+		domainID = member.DomainID
+	}
+	return domainID
+}
+
 func (s *Store) addEventLocked(eventType, severity, nodeID, bindingID, message string, payload map[string]any) {
-	s.data.Events = append(s.data.Events, Event{
+	event := Event{
 		Type: eventType, Severity: severity, NodeID: nodeID, BindingID: bindingID,
 		Message: message, Payload: payload, CreatedAt: protocol.NowISO(),
-	})
+	}
+	if err := s.appendEventFileLocked(event); err != nil {
+		fmt.Fprintf(os.Stderr, "wgnh event log write failed: %v\n", err)
+	}
+}
+
+func (s *Store) nodeWithRuntime(node Node) Node {
+	runtime := s.runtime.NodeRuntime[node.ID]
+	node.Status = runtime.Status
+	node.Platform = runtime.Platform
+	node.AgentVersion = runtime.AgentVersion
+	node.LastSeenAt = runtime.LastSeenAt
+	return node
+}
+
+func (s *Store) bindingWithEndpointLocked(id string, binding Binding) Binding {
+	endpoint := s.runtime.BindingEndpoint[id]
+	binding.EndpointHost = endpoint.Host
+	binding.EndpointPort = endpoint.Port
+	return binding
+}
+
+func clearNodeTransientFields(node *Node) {
+	clearNodeConfigFields(node)
+	node.Status = ""
+	node.Platform = ""
+	node.AgentVersion = ""
+	node.LastSeenAt = ""
+}
+
+func clearNodeConfigFields(node *Node) {
+	node.Role = ""
+	node.DomainID = ""
+	node.NodeType = ""
+	node.Interface = ""
+	node.ConfigType = ""
+	node.ReloadMethod = ""
+	node.NatterManaged = false
+	node.NatterConfigured = false
+	node.NatterCommand = nil
+	node.NatterTimeoutSeconds = 0
+	node.NatterStopWireGuard = false
+	node.NatterWireGuardControl = ""
+	node.NatterRestartDelaySeconds = 0
+}
+
+func (s *Store) appendEventFileLocked(event Event) error {
+	if err := os.MkdirAll(filepath.Dir(s.eventPath), 0o755); err != nil && filepath.Dir(s.eventPath) != "." {
+		return err
+	}
+	raw, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+	f, err := os.OpenFile(s.eventPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(append(raw, '\n')); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return rotateFileTail(s.eventPath, maxEventLogBytes)
+}
+
+func (s *Store) readEventsLocked(limit int) []Event {
+	f, err := os.Open(s.eventPath)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	var events []Event
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		var event Event
+		if err := json.Unmarshal(scanner.Bytes(), &event); err == nil {
+			events = append(events, event)
+		}
+	}
+	if limit <= 0 || limit > len(events) {
+		limit = len(events)
+	}
+	out := make([]Event, 0, limit)
+	for i := len(events) - 1; i >= 0 && len(out) < limit; i-- {
+		out = append(out, events[i])
+	}
+	return out
+}
+
+func rotateFileTail(path string, maxBytes int64) error {
+	info, err := os.Stat(path)
+	if err != nil || info.Size() <= maxBytes {
+		return err
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if _, err := f.Seek(-maxBytes, io.SeekEnd); err != nil {
+		return err
+	}
+	raw, err := io.ReadAll(f)
+	if err != nil {
+		return err
+	}
+	if idx := bytes.IndexByte(raw, '\n'); idx >= 0 && idx+1 < len(raw) {
+		raw = raw[idx+1:]
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+func label(name, id string) string {
+	if name != "" && name != id {
+		return name + " (" + id + ")"
+	}
+	return id
+}
+
+func shortKey(value string) string {
+	if len(value) <= 14 {
+		return value
+	}
+	return value[:7] + "..." + value[len(value)-6:]
+}
+
+func summarizeResult(result map[string]any) string {
+	if len(result) == 0 {
+		return "no result payload"
+	}
+	if message, ok := result["message"].(string); ok && message != "" {
+		return message
+	}
+	if errText, ok := result["error"].(string); ok && errText != "" {
+		return errText
+	}
+	if host, ok := result["endpoint_host"].(string); ok && host != "" {
+		return fmt.Sprintf("endpoint=%s:%v", host, result["endpoint_port"])
+	}
+	return fmt.Sprintf("%v", result)
 }

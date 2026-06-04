@@ -879,16 +879,18 @@ const pageHTML = `<!doctype html>
     async function approveNode(node, idx, btn) {
       const prefix = 'approve-' + idx + '-';
       const role = field(prefix + 'role').value;
+      const nodeType = field(prefix + 'nodeType').value;
+      const runtimeDefaults = runtimeDefaultsForNodeType(nodeType);
       const natterCommand = splitCommand(field(prefix + 'natterCommand').value);
       const payload = {
         ...credentials(),
         node_id: node.id,
         domain_id: field(prefix + 'domain').value,
         role,
-        node_type: field(prefix + 'nodeType').value,
+        node_type: nodeType,
         interface: field(prefix + 'interface').value.trim(),
-        config_type: field(prefix + 'configType').value,
-        reload_method: field(prefix + 'reloadMethod').value,
+        config_type: runtimeDefaults.configType,
+        reload_method: runtimeDefaults.reloadMethod,
         name: field(prefix + 'name').value.trim()
       };
       if (role === 'server') {
@@ -897,7 +899,7 @@ const pageHTML = `<!doctype html>
         payload.natter_command = natterCommand;
         payload.natter_timeout_seconds = numberValue(field(prefix + 'natterTimeout').value);
         payload.natter_stop_wireguard = field(prefix + 'natterStop').checked;
-        payload.natter_wireguard_control = field(prefix + 'natterControl').value;
+        payload.natter_wireguard_control = runtimeDefaults.natterControl;
         payload.natter_restart_delay_seconds = numberValue(field(prefix + 'natterRestartDelay').value);
       } else {
         payload.natter_managed = true;
@@ -1048,22 +1050,18 @@ const pageHTML = `<!doctype html>
       const domainOptions = domains.map(domain => '<option value="' + escapeValue(domain.id) + '"' + selected(domain.id, currentDomain) + '>' + escapeHTML(domain.name || domain.id) + '</option>').join('');
       const hasMember = !!member.node_id;
       const defaultNodeType = member.node_type || node.node_type || inferNodeType(node.platform);
-      const defaultConfigType = member.config_type || node.config_type || (defaultNodeType === 'openwrt' ? 'openwrt_uci' : 'wg_conf');
-      const defaultReload = member.reload_method || node.reload_method || (defaultNodeType === 'openwrt' ? 'ifup' : 'wg-quick-restart');
-      const defaultNatterControl = member.natter_wireguard_control || node.natter_wireguard_control || (defaultNodeType === 'openwrt' ? 'ifup' : 'wg-quick');
+      const runtimeDefaults = runtimeDefaultsForNodeType(defaultNodeType);
       return '<div class="approval">'
         + '<input data-node-form id="' + id + 'name" placeholder="节点名称" value="' + escapeValue(node.name || '') + '">'
         + '<select data-node-form id="' + id + 'domain">' + domainOptions + '</select>'
         + '<select data-node-form id="' + id + 'role" data-role="' + idx + '"><option value="client"' + selected('client', member.role || 'client') + '>client</option><option value="server"' + selected('server', member.role) + '>server</option></select>'
         + '<select data-node-form id="' + id + 'nodeType"><option value="linux"' + selected('linux', defaultNodeType) + '>linux</option><option value="openwrt"' + selected('openwrt', defaultNodeType) + '>openwrt</option></select>'
         + '<input data-node-form id="' + id + 'interface" placeholder="wg0" value="' + escapeValue(member.interface || node.interface || 'wg0') + '">'
-        + '<select data-node-form id="' + id + 'configType"><option value="wg_conf"' + selected('wg_conf', defaultConfigType) + '>wg_conf</option><option value="openwrt_uci"' + selected('openwrt_uci', defaultConfigType) + '>openwrt_uci</option><option value="runtime"' + selected('runtime', defaultConfigType) + '>runtime</option></select>'
-        + '<select data-node-form id="' + id + 'reloadMethod"><option value="wg-quick-restart"' + selected('wg-quick-restart', defaultReload) + '>wg-quick-restart</option><option value="ifup"' + selected('ifup', defaultReload) + '>ifup</option><option value="none"' + selected('none', defaultReload) + '>none</option></select>'
+        + '<div class="mini">自动配置: ' + escapeHTML(runtimeDefaults.configType + ' / ' + runtimeDefaults.reloadMethod) + '</div>'
         + '<div id="' + id + 'natterGroup" class="natter-fields">'
         + '<input data-node-form id="' + id + 'natterCommand" placeholder="server 可填: python3 /opt/Natter/natter.py -u -i pppoe-wan -b 51820 --map-only" value="' + escapeValue(((hasMember ? member.natter_command : node.natter_command) || []).join(' ')) + '">'
         + '<input data-node-form id="' + id + 'natterTimeout" type="number" min="1" placeholder="Natter timeout" value="' + escapeValue((hasMember ? member.natter_timeout_seconds : node.natter_timeout_seconds) || 90) + '">'
         + '<label class="check"><input data-node-form id="' + id + 'natterStop" type="checkbox" ' + ((hasMember ? member.natter_stop_wireguard : node.natter_stop_wireguard) ? 'checked' : '') + '>停 WG</label>'
-        + '<select data-node-form id="' + id + 'natterControl"><option value="ifup"' + selected('ifup', defaultNatterControl) + '>ifup</option><option value="wg-quick"' + selected('wg-quick', defaultNatterControl) + '>wg-quick</option><option value="systemd"' + selected('systemd', defaultNatterControl) + '>systemd</option></select>'
         + '<input data-node-form id="' + id + 'natterRestartDelay" type="number" min="0" placeholder="restart delay" value="' + escapeValue((hasMember ? member.natter_restart_delay_seconds : node.natter_restart_delay_seconds) || 0) + '">'
         + '</div>'
         + '<button data-approve="' + idx + '">' + (member.node_id ? '保存配置' : '允许加入') + '</button>'
@@ -1239,6 +1237,13 @@ const pageHTML = `<!doctype html>
       const value = String(platform || '').toLowerCase();
       if (value.includes('openwrt')) return 'openwrt';
       return 'linux';
+    }
+
+    function runtimeDefaultsForNodeType(nodeType) {
+      if (nodeType === 'openwrt') {
+        return {configType: 'openwrt_uci', reloadMethod: 'ifup', natterControl: 'ifup'};
+      }
+      return {configType: 'wg_conf', reloadMethod: 'wg-quick-restart', natterControl: 'wg-quick'};
     }
 
     function splitCommand(value) {

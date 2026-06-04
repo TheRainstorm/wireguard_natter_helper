@@ -1,6 +1,8 @@
 package store
 
 import (
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -19,7 +21,7 @@ func TestStoreAuthAndCommandQueue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.CreateNode("node-a", "Node A", "server", token); err != nil {
+	if err := st.CreateNode("node-a", "Node A", token); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := st.AuthenticateNode("node-a", token); !ok {
@@ -245,12 +247,89 @@ func TestApproveNodeDefaultsRuntimeFieldsByNodeType(t *testing.T) {
 	if _, _, err := st.UpsertJoinedNode("home", "router", "Router", "router-token", nil); err != nil {
 		t.Fatal(err)
 	}
-	node, err := st.ApproveNode("router", NodeApproval{Role: "client", NodeType: "openwrt", Interface: "wg0"})
+	if _, err := st.ApproveNode("router", NodeApproval{Role: "client", NodeType: "openwrt", Interface: "wg0"}); err != nil {
+		t.Fatal(err)
+	}
+	member := memberFor(t, st, "home", "router")
+	if member.ConfigType != "openwrt_uci" || member.ReloadMethod != "ifup" {
+		t.Fatalf("unexpected openwrt defaults: %#v", member)
+	}
+}
+
+func TestNodeDoesNotStoreDomainMemberConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	st, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if node.ConfigType != "openwrt_uci" || node.ReloadMethod != "ifup" {
-		t.Fatalf("unexpected openwrt defaults: %#v", node)
+	if err := st.CreateDomain("home", "Home", "join-home", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.UpsertPendingNode("router", "Router", "router-token", nil); err != nil {
+		t.Fatal(err)
+	}
+	node, err := st.ApproveNode("router", NodeApproval{DomainID: "home", Role: "server", NodeType: "openwrt", Interface: "wg0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.Role != "" || node.DomainID != "" || node.Interface != "" || node.ConfigType != "" || node.ReloadMethod != "" {
+		t.Fatalf("node should not carry domain member config: %#v", node)
+	}
+}
+
+func TestStateFileOmitsRuntimeAndNodeMemberFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateDomain("home", "Home", "join-home", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.UpsertPendingNode("router", "Router", "router-token", map[string]any{"platform": "linux/amd64"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ApproveNode("router", NodeApproval{DomainID: "home", Role: "server", NodeType: "openwrt", Interface: "wg0"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpdateWGInterfaces("router", []WGInterface{{Name: "wg0", PublicKey: "router-key"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.QueueCommand("router", protocol.NewCommand("natter.run", map[string]any{"server_interface": "wg0"})); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"events", "wireguard_interfaces", "commands", "endpoint_leases"} {
+		if _, exists := payload[key]; exists {
+			t.Fatalf("state file should not contain %s: %s", key, string(raw))
+		}
+	}
+	nodes, ok := payload["nodes"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing nodes: %s", string(raw))
+	}
+	router, ok := nodes["router"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing router: %s", string(raw))
+	}
+	for _, key := range []string{"role", "domain_id", "interface", "config_type", "reload_method", "status", "platform", "last_seen_at"} {
+		if _, exists := router[key]; exists {
+			t.Fatalf("node should not contain %s: %#v", key, router)
+		}
+	}
+	if _, err := os.Stat(path + ".runtime.json"); err != nil {
+		t.Fatalf("expected runtime file: %v", err)
+	}
+	if _, err := os.Stat(path + ".events.jsonl"); err != nil {
+		t.Fatalf("expected event log file: %v", err)
 	}
 }
 
@@ -277,7 +356,8 @@ func TestPendingNodeCanRegisterWithoutDomainThenBeApproved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if node.DomainID != "home" || !node.Approved || node.ConfigType != "wg_conf" || node.ReloadMethod != "wg-quick-restart" {
+	member := memberFor(t, st, "home", "node-auto")
+	if !node.Approved || node.DomainID != "" || member.ConfigType != "wg_conf" || member.ReloadMethod != "wg-quick-restart" {
 		t.Fatalf("unexpected approved node: %#v", node)
 	}
 	if _, ok := st.AuthenticateNode("node-auto", "auto-token"); !ok {
@@ -297,7 +377,7 @@ func TestApproveNodeStoresNatterConfig(t *testing.T) {
 	if _, _, err := st.UpsertPendingNode("server", "Server", "server-token", nil); err != nil {
 		t.Fatal(err)
 	}
-	node, err := st.ApproveNode("server", NodeApproval{
+	if _, err := st.ApproveNode("server", NodeApproval{
 		DomainID:                  "home",
 		Role:                      "server",
 		NodeType:                  "openwrt",
@@ -309,12 +389,12 @@ func TestApproveNodeStoresNatterConfig(t *testing.T) {
 		NatterStopWireGuard:       true,
 		NatterWireGuardControl:    "ifup",
 		NatterRestartDelaySeconds: 3,
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if !node.NatterManaged || !node.NatterConfigured || len(node.NatterCommand) != 3 || node.NatterCommand[1] != "/opt/Natter/natter.py" || node.NatterTimeoutSeconds != 60 || !node.NatterStopWireGuard || node.NatterWireGuardControl != "ifup" || node.NatterRestartDelaySeconds != 3 {
-		t.Fatalf("unexpected natter config: %#v", node)
+	member := memberFor(t, st, "home", "server")
+	if !member.NatterManaged || !member.NatterConfigured || len(member.NatterCommand) != 3 || member.NatterCommand[1] != "/opt/Natter/natter.py" || member.NatterTimeoutSeconds != 60 || !member.NatterStopWireGuard || member.NatterWireGuardControl != "ifup" || member.NatterRestartDelaySeconds != 3 {
+		t.Fatalf("unexpected natter config: %#v", member)
 	}
 }
 
@@ -337,8 +417,9 @@ func TestApproveNodeUpdatesApprovedNodeConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if node.Name != "New Name" || node.Role != "server" || node.NodeType != "openwrt" || node.Interface != "wg1" || node.ConfigType != "openwrt_uci" || node.ReloadMethod != "ifup" {
-		t.Fatalf("unexpected updated node: %#v", node)
+	member := memberFor(t, st, "home", "node")
+	if node.Name != "New Name" || member.Role != "server" || member.NodeType != "openwrt" || member.Interface != "wg1" || member.ConfigType != "openwrt_uci" || member.ReloadMethod != "ifup" {
+		t.Fatalf("unexpected updated member: node=%#v member=%#v", node, member)
 	}
 }
 
@@ -368,12 +449,12 @@ func TestApproveNodeClearsNatterWhenChangedToClient(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	node, err := st.ApproveNode("node", NodeApproval{Role: "client", Interface: "wg0", NatterManaged: true})
-	if err != nil {
+	if _, err := st.ApproveNode("node", NodeApproval{Role: "client", Interface: "wg0", NatterManaged: true}); err != nil {
 		t.Fatal(err)
 	}
-	if node.NatterConfigured || len(node.NatterCommand) != 0 || node.NatterTimeoutSeconds != 0 || node.NatterStopWireGuard || node.NatterWireGuardControl != "" || node.NatterRestartDelaySeconds != 0 {
-		t.Fatalf("expected natter config cleared: %#v", node)
+	member := memberFor(t, st, "home", "node")
+	if member.NatterConfigured || len(member.NatterCommand) != 0 || member.NatterTimeoutSeconds != 0 || member.NatterStopWireGuard || member.NatterWireGuardControl != "" || member.NatterRestartDelaySeconds != 0 {
+		t.Fatalf("expected natter config cleared: %#v", member)
 	}
 }
 
@@ -403,12 +484,12 @@ func TestApproveNodeClearsNatterWhenServerCommandRemoved(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	node, err := st.ApproveNode("node", NodeApproval{Role: "server", Interface: "wg0", NatterManaged: true, NatterConfigured: false})
-	if err != nil {
+	if _, err := st.ApproveNode("node", NodeApproval{Role: "server", Interface: "wg0", NatterManaged: true, NatterConfigured: false}); err != nil {
 		t.Fatal(err)
 	}
-	if node.NatterConfigured || len(node.NatterCommand) != 0 || node.NatterTimeoutSeconds != 0 || node.NatterStopWireGuard || node.NatterWireGuardControl != "" || node.NatterRestartDelaySeconds != 0 {
-		t.Fatalf("expected natter config cleared: %#v", node)
+	member := memberFor(t, st, "home", "node")
+	if member.NatterConfigured || len(member.NatterCommand) != 0 || member.NatterTimeoutSeconds != 0 || member.NatterStopWireGuard || member.NatterWireGuardControl != "" || member.NatterRestartDelaySeconds != 0 {
+		t.Fatalf("expected natter config cleared: %#v", member)
 	}
 }
 
@@ -438,11 +519,22 @@ func TestApproveNodeWithoutNatterManagedPreservesNatter(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	node, err := st.ApproveNode("node", NodeApproval{Role: "server", Interface: "wg1"})
-	if err != nil {
+	if _, err := st.ApproveNode("node", NodeApproval{Role: "server", Interface: "wg1"}); err != nil {
 		t.Fatal(err)
 	}
-	if !node.NatterManaged || !node.NatterConfigured || len(node.NatterCommand) != 2 || node.NatterCommand[1] != "natter.py" {
-		t.Fatalf("expected natter config preserved: %#v", node)
+	member := memberFor(t, st, "home", "node")
+	if !member.NatterManaged || !member.NatterConfigured || len(member.NatterCommand) != 2 || member.NatterCommand[1] != "natter.py" {
+		t.Fatalf("expected natter config preserved: %#v", member)
 	}
+}
+
+func memberFor(t *testing.T, st *Store, domainID, nodeID string) DomainMember {
+	t.Helper()
+	for _, member := range st.DomainMembers() {
+		if member.DomainID == domainID && member.NodeID == nodeID {
+			return member
+		}
+	}
+	t.Fatalf("member %s/%s not found: %#v", domainID, nodeID, st.DomainMembers())
+	return DomainMember{}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -231,7 +232,7 @@ func (s *Server) adminCreateDomain(req rpc.Request) rpc.Response {
 	if domain.Name == "" {
 		domain.Name = domain.ID
 	}
-	log.Printf("domain created id=%s", domain.ID)
+	log.Printf("admin created domain id=%s name=%q join_code_generated=%t description=%q", domain.ID, domain.Name, req.JoinCode == "", domain.Description)
 	return rpc.Response{OK: true, Domain: &domain}
 }
 
@@ -261,7 +262,19 @@ func (s *Server) adminApproveNode(req rpc.Request) rpc.Response {
 	if err != nil {
 		return rpc.Response{OK: false, Error: err.Error()}
 	}
-	log.Printf("node saved node=%s approved=%t domain=%s role=%s type=%s interface=%s", node.ID, node.Approved, req.DomainID, req.Role, req.NodeType, req.Interface)
+	log.Printf(
+		"admin saved node membership node=%s approved=%t domain=%s role=%s node_type=%s interface=%s config_type=%s reload_method=%s natter_configured=%t natter_stop_wg=%t",
+		node.ID,
+		node.Approved,
+		req.DomainID,
+		req.Role,
+		req.NodeType,
+		req.Interface,
+		req.ConfigType,
+		req.ReloadMethod,
+		req.NatterConfigured,
+		req.NatterStopWireGuard,
+	)
 	s.reconcileAutoBindings()
 	clean := sanitizeNode(node)
 	return rpc.Response{OK: true, Approved: true, Nodes: []store.Node{clean}}
@@ -277,7 +290,7 @@ func (s *Server) adminDeleteNode(req rpc.Request) rpc.Response {
 	if err := s.store.DeleteNode(req.NodeID); err != nil {
 		return rpc.Response{OK: false, Error: err.Error()}
 	}
-	log.Printf("node deleted node=%s", req.NodeID)
+	log.Printf("admin deleted node=%s and removed related memberships, inventory, commands, and bindings", req.NodeID)
 	s.reconcileAutoBindings()
 	return rpc.Response{OK: true}
 }
@@ -291,7 +304,7 @@ func (s *Server) syncWireGuardInventory(nodeID string, meta map[string]any) {
 		log.Printf("wireguard inventory update failed node=%s error=%v", nodeID, err)
 		return
 	}
-	log.Printf("wireguard inventory updated node=%s interfaces=%d", nodeID, len(interfaces))
+	log.Printf("wireguard inventory updated node=%s interfaces=%d detail=%s", nodeID, len(interfaces), describeWGInterfaces(interfaces))
 }
 
 func (s *Server) reconcileAutoBindings() {
@@ -301,7 +314,7 @@ func (s *Server) reconcileAutoBindings() {
 		return
 	}
 	for _, binding := range created {
-		log.Printf("auto binding created id=%s server=%s/%s client=%s/%s", binding.ID, binding.ServerNodeID, binding.ServerInterface, binding.ClientNodeID, binding.ClientInterface)
+		log.Printf("auto binding created id=%s domain=%s server=%s/%s client=%s/%s peer_public_key=%s config_type=%s reload_method=%s", binding.ID, binding.DomainID, binding.ServerNodeID, binding.ServerInterface, binding.ClientNodeID, binding.ClientInterface, shortKey(binding.PeerPublicKey), binding.ConfigType, binding.ReloadMethod)
 	}
 }
 
@@ -330,7 +343,7 @@ func (s *Server) agentReport(req rpc.Request, remote string) rpc.Response {
 
 	switch req.ReportType {
 	case "action.result":
-		log.Printf("action result node=%s command=%s ok=%v", nodeID, req.CommandID, req.Payload["ok"])
+		log.Printf("action result node=%s command=%s ok=%v payload=%s", nodeID, req.CommandID, req.Payload["ok"], compactJSON(req.Payload))
 		if err := s.store.CompleteCommand(nodeID, req.CommandID, req.Payload); err != nil {
 			return rpc.Response{OK: false, Error: err.Error()}
 		}
@@ -344,7 +357,7 @@ func (s *Server) agentReport(req rpc.Request, remote string) rpc.Response {
 		if err != nil {
 			return rpc.Response{OK: false, Error: err.Error()}
 		}
-		log.Printf("natter result node=%s interface=%s public=%s:%d bindings=%d", nodeID, lease.ServerInterface, lease.PublicIP, lease.PublicPort, len(bindings))
+		log.Printf("natter result node=%s interface=%s local=%s:%d public=%s:%d matched_bindings=%d", nodeID, lease.ServerInterface, lease.LocalIP, lease.LocalPort, lease.PublicIP, lease.PublicPort, len(bindings))
 		for _, b := range bindings {
 			cmd := protocol.NewCommand("endpoint.apply", map[string]any{
 				"binding_id":      b.ID,
@@ -359,14 +372,14 @@ func (s *Server) agentReport(req rpc.Request, remote string) rpc.Response {
 			if err := s.store.QueueCommand(b.ClientNodeID, cmd); err != nil {
 				return rpc.Response{OK: false, Error: err.Error()}
 			}
-			log.Printf("queued endpoint.apply command node=%s binding=%s command=%s", b.ClientNodeID, b.ID, cmd.CommandID)
+			log.Printf("queued endpoint.apply command=%s target_node=%s binding=%s client_interface=%s peer=%s new_endpoint=%s:%d config_type=%s reload_method=%s", cmd.CommandID, b.ClientNodeID, b.ID, b.ClientInterface, shortKey(b.PeerPublicKey), lease.PublicIP, lease.PublicPort, b.ConfigType, b.ReloadMethod)
 		}
 		return rpc.Response{OK: true, Queued: len(bindings)}
 	case "peer.unreachable":
 		return s.peerUnreachable(nodeID, req.Payload)
 	case "peer.recovered":
 		_ = s.store.AddEvent("peer.recovered", "info", nodeID, stringValue(req.Payload["binding_id"]), "Peer handshake recovered", req.Payload)
-		log.Printf("peer recovered node=%s binding=%s interface=%s", nodeID, stringValue(req.Payload["binding_id"]), stringValue(req.Payload["interface"]))
+		log.Printf("peer recovered node=%s binding=%s interface=%s last_handshake=%v", nodeID, stringValue(req.Payload["binding_id"]), stringValue(req.Payload["interface"]), req.Payload["last_handshake"])
 		return rpc.Response{OK: true}
 	default:
 		_ = s.store.AddEvent("agent.report", "info", nodeID, "", "Agent report", req.Payload)
@@ -395,7 +408,7 @@ func (s *Server) peerUnreachable(nodeID string, payload map[string]any) rpc.Resp
 		return rpc.Response{OK: false, Error: err.Error()}
 	}
 	s.lastNatterRun[key] = now
-	log.Printf("auto queued natter.run server=%s interface=%s binding=%s command=%s", serverNodeID, serverInterface, bindingID, cmd.CommandID)
+	log.Printf("auto queued natter.run command=%s server=%s interface=%s reason=peer_unreachable binding=%s payload=%s", cmd.CommandID, serverNodeID, serverInterface, bindingID, compactJSON(payload))
 	return rpc.Response{OK: true, Command: &cmd}
 }
 
@@ -410,7 +423,7 @@ func (s *Server) adminRunNatter(req rpc.Request) rpc.Response {
 	if err := s.store.QueueCommand(req.ServerNodeID, cmd); err != nil {
 		return rpc.Response{OK: false, Error: err.Error()}
 	}
-	log.Printf("queued natter.run command node=%s interface=%s command=%s", req.ServerNodeID, req.ServerInterface, cmd.CommandID)
+	log.Printf("admin queued natter.run command=%s server=%s interface=%s", cmd.CommandID, req.ServerNodeID, req.ServerInterface)
 	return rpc.Response{OK: true, Command: &cmd}
 }
 
@@ -506,6 +519,29 @@ func stringValue(v any) string {
 	return s
 }
 
+func describeWGInterfaces(interfaces []store.WGInterface) string {
+	parts := make([]string, 0, len(interfaces))
+	for _, item := range interfaces {
+		parts = append(parts, fmt.Sprintf("%s public_key=%s listen=%d peers=%d config=%s", item.Name, shortKey(item.PublicKey), item.ListenPort, len(item.Peers), item.ConfigType))
+	}
+	return strings.Join(parts, "; ")
+}
+
+func compactJSON(value any) string {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Sprintf("%v", value)
+	}
+	return string(raw)
+}
+
+func shortKey(value string) string {
+	if len(value) <= 14 {
+		return value
+	}
+	return value[:7] + "..." + value[len(value)-6:]
+}
+
 func stringSlice(v any) []string {
 	values, ok := v.([]any)
 	if !ok {
@@ -534,7 +570,7 @@ func number(v any) (int, error) {
 	}
 }
 
-func CreateNode(path, id, name, role string) (string, error) {
+func CreateNode(path, id, name string) (string, error) {
 	token, err := auth.GenerateToken()
 	if err != nil {
 		return "", err
@@ -546,5 +582,5 @@ func CreateNode(path, id, name, role string) (string, error) {
 	if name == "" {
 		name = id
 	}
-	return token, st.CreateNode(id, name, role, token)
+	return token, st.CreateNode(id, name, token)
 }
